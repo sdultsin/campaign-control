@@ -1,0 +1,69 @@
+import type { WorkspaceConfig } from './config';
+import { CM_CHANNEL_MAP, CM_MONITOR_CHANNELS, PILOT_CMS } from './config';
+
+/**
+ * Resolve the Slack channel for a notification based on the CM name.
+ * Routes to the CM's dedicated monitor channel if they're in the pilot.
+ * Falls back to the fallback channel if CM is unknown or unmapped.
+ */
+export function resolveChannel(
+  cmName: string | null,
+  fallbackChannel: string,
+): string {
+  if (cmName && CM_MONITOR_CHANNELS[cmName]) {
+    return CM_MONITOR_CHANNELS[cmName];
+  }
+  return fallbackChannel;
+}
+
+/**
+ * Check if a campaign belongs to a pilot CM.
+ */
+export function isPilotCampaign(cmName: string | null): boolean {
+  if (PILOT_CMS.size === 0) return true; // empty set = no filter, full fleet
+  if (!cmName) return false;
+  return PILOT_CMS.has(cmName);
+}
+
+/**
+ * Check if a dedicated workspace's default CM is in the pilot.
+ * Returns false for shared workspaces (defaultCm === null) since
+ * those need per-campaign CM resolution.
+ */
+export function isPilotWorkspace(config: WorkspaceConfig): boolean {
+  if (PILOT_CMS.size === 0) return true;
+  if (config.defaultCm === null) return true; // shared — must check per-campaign
+  return PILOT_CMS.has(config.defaultCm);
+}
+
+/**
+ * Resolve the CM name for audit logging.
+ * For dedicated workspaces, returns the default CM.
+ * For shared workspaces, parses from campaign title.
+ */
+export function resolveCmName(
+  workspaceConfig: WorkspaceConfig,
+  campaignName: string,
+): string | null {
+  // Always check parentheses first — a campaign in a dedicated workspace
+  // can belong to a different CM (e.g. Ido's campaign in Leo's workspace)
+  const parenMatches = [...campaignName.matchAll(/\(([^)]+)\)/g)].map((m) => m[1]);
+  const filtered = parenMatches.filter((v) => v.trim().toLowerCase() !== 'copy');
+  if (filtered.length > 0) {
+    return filtered[filtered.length - 1].trim().toUpperCase();
+  }
+
+  // No parenthetical match — use workspace default if available
+  if (workspaceConfig.defaultCm) return workspaceConfig.defaultCm;
+
+  // Fallback: check if campaign name contains a known CM name (e.g. "- Alex" without parentheses)
+  const knownCms = Object.keys(CM_CHANNEL_MAP);
+  const nameUpper = campaignName.toUpperCase();
+  for (const cm of knownCms) {
+    if (nameUpper.includes(`- ${cm}`) || nameUpper.endsWith(` ${cm}`)) {
+      return cm;
+    }
+  }
+
+  return null;
+}

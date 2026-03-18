@@ -1,0 +1,109 @@
+export const MCP_SSE_URL = 'https://king-instantly-mcp-production.up.railway.app/sse';
+
+export const CM_CHANNEL_MAP: Record<string, string> = {
+  'EYVER': 'C0A7B19L932',
+  'ANDRES': 'C0ADASDL7PH',
+  'LEO': 'C0A618T6BF1',
+  'CARLOS': 'C0A618X6ST1',
+  'SAMUEL': 'C0A6EM740NA',
+  'IDO': 'C0A6GNNG198',
+  'ALEX': 'C0A8KUADR4Z',
+  'MARCOS': 'C0AELJPTF4Y',
+  'LAUTARO': 'C0A6GN95VS6',
+  'BRENDAN': 'C0A619CL087',
+  'TOMI': 'C0A618H43RV',
+  'SHAAN': 'C0A6AAMFDNX',
+};
+
+export const VARIANT_LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+export type Product = 'FUNDING' | 'ERC' | 'S125';
+
+export const PROVIDER_THRESHOLDS: Record<number, number> = {
+  1: 4500,  // SMTP / OTD
+  2: 3800,  // Google
+  3: 5000,  // Outlook
+};
+export const DEFAULT_THRESHOLD = 4000;
+
+export const PRODUCT_THRESHOLDS: Record<Product, number> = {
+  FUNDING: 4000,   // overridden by per-infra at runtime
+  ERC: 6000,
+  S125: 14000,
+};
+
+export interface WorkspaceConfig {
+  id: string;
+  name: string;
+  product: Product;
+  defaultCm: string | null;
+}
+
+export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
+  // Funding - single-CM workspaces
+  { id: 'renaissance-1', name: 'Renaissance 1', product: 'FUNDING', defaultCm: 'IDO' },
+  { id: 'renaissance-2', name: 'Renaissance 2', product: 'FUNDING', defaultCm: 'EYVER' },
+  { id: 'the-gatekeepers', name: 'The Gatekeepers', product: 'FUNDING', defaultCm: 'BRENDAN' },
+  { id: 'equinox', name: 'Equinox', product: 'FUNDING', defaultCm: 'LEO' },
+  { id: 'the-dyad', name: 'The Dyad', product: 'FUNDING', defaultCm: 'CARLOS' },
+  { id: 'koi-and-destroy', name: 'Koi and Destroy', product: 'FUNDING', defaultCm: 'TOMI' },
+  { id: 'outlook-2', name: 'Outlook 2', product: 'FUNDING', defaultCm: 'MARCOS' },
+  { id: 'prospects-power', name: 'Prospects Power', product: 'FUNDING', defaultCm: 'SHAAN' },
+  { id: 'automated-applications', name: 'Automated applications', product: 'FUNDING', defaultCm: 'IDO' },
+  { id: 'outlook-1', name: 'Outlook 1', product: 'FUNDING', defaultCm: 'IDO' },
+  // Funding - shared workspaces (no single default CM)
+  { id: 'renaissance-4', name: 'Renaissance 4', product: 'FUNDING', defaultCm: null },
+  { id: 'renaissance-5', name: 'Renaissance 5', product: 'FUNDING', defaultCm: null },
+  { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null },
+  // Excluded: Renaissance 3, Renaissance 6, Renaissance 7, Outlook 3
+  // Warming up as of 2026-03-16 (confirmed by Samuel). No CMs assigned, 0 active campaigns.
+  // Re-add when they go live.
+  // ERC
+  { id: 'erc-1', name: 'ERC 1', product: 'ERC', defaultCm: null },
+  { id: 'erc-2', name: 'ERC 2', product: 'ERC', defaultCm: null },
+  // S125
+  { id: 'section-125-1', name: 'Section 125 1', product: 'S125', defaultCm: 'IDO' },
+  { id: 'section-125-2', name: 'Section 125 2', product: 'S125', defaultCm: null },
+  // Warm Leads — excluded from pilot. KPIs are fundamentally different from cold
+  // outreach (warm follow-ups convert at much higher rates). Will revisit with
+  // Ido to define proper thresholds before adding.
+  // { id: 'warm-leads', name: 'Warm leads', product: 'WARM_LEADS', defaultCm: 'IDO' },
+];
+
+export function getWorkspaceConfig(workspaceId: string): WorkspaceConfig | null {
+  return WORKSPACE_CONFIGS.find((c) => c.id === workspaceId) ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Pilot mode: only these CMs get evaluated and notified.
+// Remove this filter (or empty the set) to go full-fleet.
+// ---------------------------------------------------------------------------
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'IDO', 'SAMUEL']);
+
+// CM -> Slack channel for monitor notifications
+export const CM_MONITOR_CHANNELS: Record<string, string> = {
+  'ALEX': 'C0AN70F328G',     // #cc-alex
+  'CARLOS': 'C0AMRK81MRP',   // #cc-carlos
+  'IDO': 'C0AMRK842PK',      // #cc-ido
+  'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
+};
+
+// Max variants to disable per cron run. Remaining candidates are logged as
+// DEFERRED and picked up in the next hourly run. Prevents a large initial
+// purge from hitting rate limits or creating excessive blast radius.
+// Set to 0 for unlimited.
+export const MAX_KILLS_PER_RUN = 10;
+
+export const LAST_VARIANT_WARNING_PCT = 0.8;
+export const WARNING_DEDUP_TTL_SECONDS = 86400;
+export const KILL_DEDUP_TTL_SECONDS = 604800; // 7 days (same as blocked)
+// Secondary rescan: how long to wait before rechecking disabled variants
+export const RESCAN_DELAY_HOURS = 4;
+// TTL for rescan queue entries in KV (auto-cleanup after 48 hours)
+export const RESCAN_TTL_SECONDS = 172800;
+// Maximum window for redemption (explicit expiration check in code)
+export const RESCAN_MAX_WINDOW_HOURS = 48;
+
+// Leads depletion monitor: dedup TTLs
+export const LEADS_WARNING_DEDUP_TTL_SECONDS = 172800;   // 48 hours
+export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
