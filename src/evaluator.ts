@@ -24,7 +24,7 @@ export function evaluateVariant(sent: number, opportunities: number, threshold: 
 export function safetyCheck(step: Step, killTargetIndices: number[]): SafetyResult {
   const killSet = new Set(killTargetIndices);
   const remaining = step.variants.filter(
-    (v, i) => v.v_disabled !== true && !killSet.has(i),
+    (v, i) => !v.v_disabled && !killSet.has(i),
   ).length;
 
   if (remaining === 0) {
@@ -54,7 +54,7 @@ export function evaluateStep(
       );
       return false;
     }
-    return variant.v_disabled !== true;
+    return !variant.v_disabled;
   });
 
   // Collect KILL_CANDIDATE indices (using the variant field as the index into step.variants).
@@ -118,7 +118,7 @@ export function checkVariantWarnings(
 
   for (let i = 0; i < step.variants.length; i++) {
     // Skip disabled, already-killed, or blocked variants
-    if (step.variants[i].v_disabled === true) continue;
+    if (step.variants[i].v_disabled) continue;
     if (killedSet.has(i)) continue;
 
     const variantAnalytics = analytics.find(

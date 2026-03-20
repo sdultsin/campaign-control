@@ -1,28 +1,15 @@
-import type { StepAnalytics, LeadsDepletionResult } from './types';
-
-/**
- * Sum all variant sent counts for step index 0.
- * This equals "Sequence Started" in the Instantly UI:
- * the number of unique leads that received the first email.
- */
-export function computeStep0Sent(allAnalytics: StepAnalytics[]): number {
-  return allAnalytics
-    .filter(a => parseInt(a.step, 10) === 0)
-    .reduce((sum, a) => sum + a.sent, 0);
-}
+import type { LeadsDepletionResult } from './types';
 
 /**
  * Calculate uncontacted leads.
- * uncontacted = total_leads - step0_sent - bounced - skipped
- * Floors at 0 (cumulative step analytics can exceed total after lead recycling).
+ * Uses the "contacted" field from get_campaign_analytics (= "Sequence started" in UI).
+ * uncontacted = total_leads - contacted
  */
 export function computeUncontacted(
   totalLeads: number,
-  step0Sent: number,
-  bounced: number,
-  skipped: number,
+  contacted: number,
 ): number {
-  return Math.max(0, totalLeads - step0Sent - bounced - skipped);
+  return Math.max(0, totalLeads - contacted);
 }
 
 /**

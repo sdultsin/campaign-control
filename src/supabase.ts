@@ -1,5 +1,6 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import type { AuditEntry, LeadsAuditEntry, RunSummary, DailySnapshot } from './types';
+import { WORKER_VERSION } from './version';
 
 let client: SupabaseClient | null = null;
 
@@ -38,6 +39,7 @@ export async function writeAuditLogToSupabase(
     safety_surviving_variants: entry.safety.survivingVariants,
     safety_notification: entry.safety.notification,
     dry_run: entry.dryRun,
+    worker_version: WORKER_VERSION,
   });
   if (error) console.error(`[supabase] audit_logs insert failed: ${error.message}`);
 }
@@ -55,12 +57,16 @@ export async function writeLeadsAuditToSupabase(
     campaign_id: entry.campaignId,
     cm: entry.cm,
     leads_total: entry.leads.total,
+    leads_contacted: entry.leads.contacted,
     leads_uncontacted: entry.leads.uncontacted,
-    leads_step0_sent: entry.leads.step0Sent,
+    leads_completed: entry.leads.completed,
+    leads_active: entry.leads.active,
     leads_bounced: entry.leads.bounced,
     leads_skipped: entry.leads.skipped,
+    leads_unsubscribed: entry.leads.unsubscribed,
     leads_daily_limit: entry.leads.dailyLimit,
     dry_run: entry.dryRun,
+    worker_version: WORKER_VERSION,
   });
   if (error) console.error(`[supabase] leads_audit_logs insert failed: ${error.message}`);
 }
@@ -86,7 +92,9 @@ export async function writeRunSummaryToSupabase(
     leads_warnings: summary.leadsWarnings,
     leads_exhausted: summary.leadsExhausted,
     leads_recovered: summary.leadsRecovered,
+    ghost_re_enables: summary.ghostReEnables,
     dry_run: summary.dryRun,
+    worker_version: WORKER_VERSION,
   });
   if (error) console.error(`[supabase] run_summaries insert failed: ${error.message}`);
 }
@@ -113,6 +121,7 @@ export async function writeDailySnapshotToSupabase(
     by_workspace: snapshot.byWorkspace,
     by_cm: snapshot.byCm,
     campaign_health: snapshot.campaignHealth,
+    worker_version: WORKER_VERSION,
   };
 
   const { error } = await sb.from('daily_snapshots').upsert(row, {
@@ -144,6 +153,9 @@ export async function writeNotificationToSupabase(
   sb: SupabaseClient,
   record: NotificationRecord,
 ): Promise<void> {
-  const { error } = await sb.from('notifications').insert(record);
+  const { error } = await sb.from('notifications').insert({
+    ...record,
+    worker_version: WORKER_VERSION,
+  });
   if (error) console.error(`[supabase] notifications insert failed: ${error.message}`);
 }

@@ -4,7 +4,7 @@ compatibility_date = "2025-03-15"
 account_id = "8eb4f67f852e00194242db7f998cb06b"
 
 [triggers]
-crons = ["0 * * * *"]
+crons = ["0 10,16,22 * * *"]
 
 [[kv_namespaces]]
 binding = "KV"
@@ -16,3 +16,4 @@ THRESHOLD = "4000"
 CONCURRENCY_CAP = "5"
 SLACK_FALLBACK_CHANNEL = "C0AMRK8RC4R"
 KILLS_ENABLED = "false"
+INSTANTLY_MODE = "direct"

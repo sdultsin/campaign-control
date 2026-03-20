@@ -30,12 +30,10 @@ export async function postThreadedMessage(
 ): Promise<{ threadTs: string | null; replySuccess: boolean }> {
   const ts = await postSlackMessage(channel, title, token);
   if (ts) {
-    await sleep(500);
+    await sleep(200);
     const replyTs = await postSlackMessage(channel, details, token, ts);
-    await sleep(1000);
     return { threadTs: ts, replySuccess: replyTs !== null };
   }
-  await sleep(1000);
   return { threadTs: null, replySuccess: false };
 }
 
@@ -226,10 +224,10 @@ export function formatLeadsWarningDetails(
   uncontacted: number,
   totalLeads: number,
 ): string {
-  return `Campaign: ${candidate.campaignName}
-Workspace: ${candidate.workspaceName}
+  return `Workspace: ${candidate.workspaceName}
+Campaign: ${candidate.campaignName}
 
-${uncontacted.toLocaleString()} / ${totalLeads.toLocaleString()} leads remaining. Daily limit: ${candidate.dailyLimit.toLocaleString()}.`;
+${uncontacted.toLocaleString()} / ${totalLeads.toLocaleString()} leads uncontacted. Daily limit: ${candidate.dailyLimit.toLocaleString()}.`;
 }
 
 export async function sendLeadsWarningNotification(
@@ -255,21 +253,29 @@ export function formatLeadsExhaustedTitle(): string {
 export function formatLeadsExhaustedDetails(
   candidate: LeadsCheckCandidate,
   totalLeads: number,
+  activeLeads: number,
 ): string {
-  return `Campaign: ${candidate.campaignName}
-Workspace: ${candidate.workspaceName}
+  let message = `Workspace: ${candidate.workspaceName}
+Campaign: ${candidate.campaignName}
 
-0 / ${totalLeads.toLocaleString()} leads remaining.`;
+0 / ${totalLeads.toLocaleString()} leads uncontacted.`;
+
+  if (activeLeads > 0) {
+    message += `\n\n${activeLeads.toLocaleString()} leads still active in sequence. If no new leads are needed, no action required.`;
+  }
+
+  return message;
 }
 
 export async function sendLeadsExhaustedNotification(
   candidate: LeadsCheckCandidate,
   totalLeads: number,
+  activeLeads: number,
   channelId: string,
   env: Env,
 ): Promise<{ threadTs: string | null; replySuccess: boolean }> {
   const title = formatLeadsExhaustedTitle();
-  const details = formatLeadsExhaustedDetails(candidate, totalLeads);
+  const details = formatLeadsExhaustedDetails(candidate, totalLeads, activeLeads);
   if (env.DRY_RUN === 'true') {
     console.log(`[DRY RUN] ${title}\n${details}`);
     return { threadTs: null, replySuccess: false };

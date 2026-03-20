@@ -19,7 +19,10 @@ export class InstantlyApi {
     return this.extractArray<Campaign>(raw, 'get_campaigns');
   }
 
-  async getStepAnalytics(workspaceId: string, campaignId: string): Promise<StepAnalytics[]> {
+  async getStepAnalytics(
+    workspaceId: string,
+    campaignId: string,
+  ): Promise<StepAnalytics[]> {
     const raw = await this.mcp.callTool<unknown>('get_step_analytics', {
       workspace_id: workspaceId,
       campaign_id: campaignId,
@@ -58,7 +61,7 @@ export class InstantlyApi {
     return [];
   }
 
-  async countLeads(workspaceId: string, campaignId: string): Promise<{ total_leads: number; status: { completed: number; active: number; skipped: number; bounced: number } }> {
+  async countLeads(workspaceId: string, campaignId: string): Promise<{ total_leads: number; status: { completed: number; active: number; skipped: number; bounced: number; unsubscribed: number } }> {
     const raw = await this.mcp.callTool<unknown>('count_leads', {
       workspace_id: workspaceId,
       campaign_id: campaignId,
@@ -66,13 +69,42 @@ export class InstantlyApi {
     // count_leads returns an object, not an array
     if (raw && typeof raw === 'object') {
       const obj = raw as Record<string, unknown>;
+      const status = (obj.status as Record<string, number>) ?? {};
       return {
         total_leads: (obj.total_leads as number) ?? 0,
-        status: (obj.status as { completed: number; active: number; skipped: number; bounced: number }) ?? { completed: 0, active: 0, skipped: 0, bounced: 0 },
+        status: {
+          completed: status.completed ?? 0,
+          active: status.active ?? 0,
+          skipped: status.skipped ?? 0,
+          bounced: status.bounced ?? 0,
+          unsubscribed: status.unsubscribed ?? 0,
+        },
       };
     }
     console.warn(`[auto-turnoff] count_leads unexpected shape: ${JSON.stringify(raw).slice(0, 500)}`);
-    return { total_leads: 0, status: { completed: 0, active: 0, skipped: 0, bounced: 0 } };
+    return { total_leads: 0, status: { completed: 0, active: 0, skipped: 0, bounced: 0, unsubscribed: 0 } };
+  }
+
+  async getCampaignAnalytics(workspaceId: string, campaignId: string): Promise<{ contacted: number; sent: number }> {
+    const raw = await this.mcp.callTool<unknown>('get_campaign_analytics', {
+      workspace_id: workspaceId,
+      campaign_id: campaignId,
+    });
+    // Response shape: { campaigns: [{ contacted, sent, ... }] } or direct object
+    if (raw && typeof raw === 'object') {
+      const obj = raw as Record<string, unknown>;
+      // Try campaigns array wrapper
+      if (Array.isArray(obj.campaigns) && obj.campaigns.length > 0) {
+        const c = obj.campaigns[0] as Record<string, unknown>;
+        return { contacted: (c.contacted as number) ?? 0, sent: (c.sent as number) ?? 0 };
+      }
+      // Direct object with contacted field
+      if ('contacted' in obj) {
+        return { contacted: (obj.contacted as number) ?? 0, sent: (obj.sent as number) ?? 0 };
+      }
+    }
+    console.warn(`[auto-turnoff] get_campaign_analytics unexpected shape: ${JSON.stringify(raw).slice(0, 500)}`);
+    return { contacted: 0, sent: 0 };
   }
 
   async listAccounts(workspaceId: string, tagIds: string): Promise<Array<{ email?: string; provider_code?: number; [key: string]: unknown }>> {

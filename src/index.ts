@@ -1,5 +1,6 @@
 import { McpClient } from './mcp-client';
 import { InstantlyApi } from './instantly';
+import { InstantlyDirectApi } from './instantly-direct';
 import { evaluateStep, evaluateVariant, checkVariantWarnings } from './evaluator';
 import { resolveChannel, resolveCmName, isPilotCampaign, isPilotWorkspace } from './router';
 import {
@@ -29,13 +30,14 @@ import {
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
+import { handleRevert } from './revert';
 import type {
   Env, KillAction, CampaignDetail, StepAnalytics, AuditEntry, RunSummary, RescanEntry,
   DailySnapshot, BaselineSnapshot, WorkspaceSnapshot, CmSnapshot, CampaignHealthEntry,
   LeadsCheckCandidate, LeadsWarningEntry, LeadsExhaustedEntry, LeadsAuditEntry,
 } from './types';
 
-import { computeStep0Sent, computeUncontacted, evaluateLeadDepletion } from './leads-monitor';
+import { computeUncontacted, evaluateLeadDepletion } from './leads-monitor';
 
 // ---------------------------------------------------------------------------
 // KV lock helpers
@@ -102,6 +104,38 @@ function isOffCampaign(name: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Clear V1 stale KV keys (one-time cleanup before V2 deploy)
+// ---------------------------------------------------------------------------
+
+async function clearV1Keys(env: Env): Promise<Response> {
+  const prefixes = ['kill:', 'blocked:', 'warning:', 'rescan:'];
+  const stats: Record<string, number> = {};
+  let totalDeleted = 0;
+
+  for (const prefix of prefixes) {
+    let cursor: string | undefined;
+    let count = 0;
+
+    do {
+      const list = await env.KV.list({ prefix, cursor, limit: 100 });
+      for (const key of list.keys) {
+        await env.KV.delete(key.name);
+        count++;
+      }
+      cursor = list.list_complete ? undefined : (list.cursor ?? undefined);
+    } while (cursor);
+
+    stats[prefix] = count;
+    totalDeleted += count;
+  }
+
+  return Response.json({
+    message: `Cleared ${totalDeleted} V1 KV keys`,
+    breakdown: stats,
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Baseline capture
 // ---------------------------------------------------------------------------
 
@@ -145,10 +179,11 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
 
       for (const campaign of activeCampaigns) {
         try {
-          const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
           const campaignDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
 
           if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) continue;
+
+          const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
 
           const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV);
           if (threshold === null) continue;
@@ -267,8 +302,65 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
 // ---------------------------------------------------------------------------
 
 export default {
-  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Wrap entire run in ctx.waitUntil() so Cloudflare keeps the worker alive
+    const runPromise = executeScheduledRun(env);
+    ctx.waitUntil(runPromise);
+    await runPromise;
+  },
+
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (url.pathname === '/__scheduled') {
+      const runPromise = executeScheduledRun(env);
+      ctx.waitUntil(runPromise);
+      await runPromise;
+      return new Response('Scheduled run complete. Check console logs for output.');
+    }
+
+    if (url.pathname === '/__dashboard') {
+      return serveDashboard(env.KV, url.searchParams);
+    }
+
+    if (url.pathname === '/__baseline') {
+      return serveBaseline(env, url.searchParams);
+    }
+
+    if (url.pathname === '/__backfill') {
+      return backfillKvToSupabase(env, url.searchParams);
+    }
+
+    if (url.pathname === '/__revert') {
+      return handleRevert(env, url.searchParams);
+    }
+
+    if (url.pathname === '/__clear-v1-keys') {
+      const confirm = url.searchParams.get('confirm');
+      if (confirm !== 'yes') {
+        return new Response('Add ?confirm=yes to actually clear keys. This is destructive.', { status: 400 });
+      }
+      return clearV1Keys(env);
+    }
+
+    return new Response('Auto Turn-Off Worker. Use /__scheduled to trigger manually, /__baseline to capture a baseline.', { status: 200 });
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Extracted scheduled run body
+// ---------------------------------------------------------------------------
+
+async function executeScheduledRun(env: Env): Promise<void> {
     const runStart = Date.now();
+
+    console.log(JSON.stringify({
+      event: 'run_start',
+      timestamp: new Date().toISOString(),
+      dryRun: env.DRY_RUN === 'true',
+      killsEnabled: env.KILLS_ENABLED === 'true',
+      mode: env.INSTANTLY_MODE || 'mcp',
+    }));
 
     // 1. ACQUIRE LOCK
     const locked = await acquireLock(env.KV);
@@ -277,8 +369,14 @@ export default {
       return;
     }
 
+    // API client: direct mode bypasses MCP for fast endpoints (50x faster).
+    const useDirectApi = env.INSTANTLY_MODE === 'direct' && env.INSTANTLY_API_KEYS;
     const mcp = new McpClient();
-    const instantly = new InstantlyApi(mcp);
+    const mcpApi = new InstantlyApi(mcp);
+    const instantly = useDirectApi
+      ? new InstantlyDirectApi(env.INSTANTLY_API_KEYS)
+      : mcpApi;
+    // leadsApi removed — leads now use batch direct API (getBatchCampaignAnalytics)
 
     // Supabase client (null if env vars not set -- graceful degradation)
     const sb: SupabaseClient | null = (env.SUPABASE_URL && env.SUPABASE_ANON_KEY)
@@ -307,7 +405,7 @@ export default {
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
 
-    // Snapshot accumulator (zero extra API calls — data collected during Phase 1)
+    // Snapshot accumulator (zero extra API calls -- data collected during Phase 1)
     const snapshotAcc = {
       totalCampaigns: 0,
       totalSteps: 0,
@@ -320,12 +418,17 @@ export default {
       campaignHealth: [] as CampaignHealthEntry[],
     };
 
-    const concurrencyCap = parseInt(env.CONCURRENCY_CAP, 10) || 3;
+    // Higher concurrency for direct API (no shared SSE connection bottleneck)
+    const concurrencyCap = useDirectApi
+      ? Math.min(parseInt(env.CONCURRENCY_CAP, 10) || 10, 15)
+      : Math.min(parseInt(env.CONCURRENCY_CAP, 10) || 3, 5);
     const isDryRun = env.DRY_RUN === 'true';
 
     try {
-      // 2. CONNECT MCP
-      await mcp.connect();
+      // 2. CONNECT MCP (used when INSTANTLY_MODE=mcp; skipped in direct mode)
+      if (!useDirectApi) {
+        await mcp.connect();
+      }
 
       // 3. GET MONITORED WORKSPACES
       const allWorkspaces = await instantly.listWorkspaces();
@@ -402,11 +505,11 @@ export default {
             try {
               totalCampaignsEvaluated++;
 
-              // a. Get step analytics
-              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
-
-              // b. Get campaign details (needed before threshold resolution)
+              // a. Get campaign details first (need sequences for kill writes)
               const campaignDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
+
+              // b. Get step analytics (unfiltered — validated as accurate)
+              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
 
               // c. Sequences guard
               if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) {
@@ -500,7 +603,6 @@ export default {
               // --- LEADS DEPLETION: collect candidate for Phase 3 ---
               const dailyLimit = (campaignDetail as Record<string, unknown>).daily_limit as number | undefined;
               if (dailyLimit && dailyLimit > 0) {
-                const step0Sent = computeStep0Sent(allAnalytics);
                 leadsCheckCandidates.push({
                   workspaceId: workspace.id,
                   workspaceName: workspace.name,
@@ -508,7 +610,6 @@ export default {
                   campaignName: campaign.name,
                   cmName,
                   dailyLimit,
-                  step0Sent,
                   channelId,
                 });
               } else {
@@ -523,9 +624,25 @@ export default {
                 return;
               }
 
+              // Collect kill candidates for batch execution after evaluation
+              const pendingKills: Array<{
+                kill: KillAction;
+                auditEntry: AuditEntry;
+                stepIndex: number;
+                channelId: string;
+              }> = [];
+
               // f. FOR EACH STEP in primary sequence
               for (let stepIndex = 0; stepIndex < primaryStepCount; stepIndex++) {
                 const stepDetail = campaignDetail.sequences[0].steps[stepIndex];
+
+                // Skip steps where all variants are already disabled
+                if (stepDetail.variants.every((v) => v.v_disabled)) {
+                  console.log(
+                    `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" — all variants disabled, skipping`,
+                  );
+                  continue;
+                }
 
                 const stepAnalytics = primaryAnalytics.filter(
                   (a) => parseInt(a.step, 10) === stepIndex,
@@ -540,6 +657,14 @@ export default {
 
                 // Process confirmed kills
                 for (const kill of kills) {
+                  // Defensive check — skip if variant is already disabled in campaign detail
+                  if (stepDetail.variants[kill.variantIndex]?.v_disabled) {
+                    console.log(
+                      `[auto-turnoff] Variant ${kill.variantIndex} in step ${stepIndex + 1} of "${campaign.name}" is already disabled — skipping kill`,
+                    );
+                    continue;
+                  }
+
                   const variantAnalytics = stepAnalytics.find(
                     (a) => parseInt(a.variant, 10) === kill.variantIndex,
                   );
@@ -550,7 +675,7 @@ export default {
                     opportunities === 0 ? 'Infinity' : (sent / opportunities).toFixed(1);
 
                   const survivingVariantCount = stepDetail.variants.filter(
-                    (v, i) => v.v_disabled !== true && i !== kill.variantIndex,
+                    (v, i) => !v.v_disabled && i !== kill.variantIndex,
                   ).length;
 
                   const killAction: KillAction = {
@@ -580,7 +705,7 @@ export default {
                     workspaceId: workspace.id,
                     campaign: campaign.name,
                     campaignId: campaign.id,
-                    step: stepIndex,
+                    step: stepIndex + 1,
                     variant: kill.variantIndex,
                     variantLabel: VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex),
                     cm: cmName,
@@ -591,7 +716,7 @@ export default {
                   };
 
                   // Kill cap check: defer if we've hit the per-run limit
-                  const killCapReached = MAX_KILLS_PER_RUN > 0 && totalVariantsKilled >= MAX_KILLS_PER_RUN;
+                  const killCapReached = MAX_KILLS_PER_RUN > 0 && (totalVariantsKilled + pendingKills.length) >= MAX_KILLS_PER_RUN;
 
                   if (killCapReached && !isDryRun) {
                     totalVariantsDeferred++;
@@ -602,7 +727,7 @@ export default {
                     await writeAuditLog(env.KV, deferredAudit).catch((err) =>
                       console.error(`[auto-turnoff] Failed to write deferred audit log: ${err}`),
                     );
-                    if (sb) writeAuditLogToSupabase(sb, deferredAudit).catch((err) =>
+                    if (sb) await writeAuditLogToSupabase(sb, deferredAudit).catch((err) =>
                       console.error(`[supabase] deferred audit write failed: ${err}`),
                     );
                     console.log(
@@ -615,7 +740,7 @@ export default {
                     await writeAuditLog(env.KV, auditEntry).catch((err) =>
                       console.error(`[auto-turnoff] Failed to write audit log: ${err}`),
                     );
-                    if (sb) writeAuditLogToSupabase(sb, auditEntry).catch((err) =>
+                    if (sb) await writeAuditLogToSupabase(sb, auditEntry).catch((err) =>
                       console.error(`[supabase] audit write failed: ${err}`),
                     );
                     console.log(
@@ -644,110 +769,21 @@ export default {
                       console.error(`[auto-turnoff] Failed to write rescan entry: ${err}`),
                     );
                   } else {
-                    try {
-                      const killsEnabled = env.KILLS_ENABLED === 'true';
+                    // Collect for batch execution (dedup check first)
+                    const killDedupKey = `kill:${campaign.id}:${stepIndex}:${kill.variantIndex}`;
+                    const alreadyKilled = await env.KV.get(killDedupKey);
 
-                      const success = killsEnabled
-                        ? await instantly.disableVariant(
-                            workspace.id,
-                            campaignDetail,
-                            stepIndex,
-                            kill.variantIndex,
-                          )
-                        : false;
-
-                      if (!killsEnabled) {
-                        console.log(
-                          `[auto-turnoff] KILLS PAUSED: would disable ${campaign.name} Step ${stepIndex + 1} Variant ${kill.variantIndex} — skipping Instantly API call`,
-                        );
-                      }
-
-                      if (success) {
-                        // Dedup: only notify once per killed variant
-                        const killDedupKey = `kill:${campaign.id}:${stepIndex}:${kill.variantIndex}`;
-                        const alreadyKilled = await env.KV.get(killDedupKey);
-
-                        if (!alreadyKilled) {
-                          workspaceKills++;
-                          totalVariantsKilled++;
-
-                          await writeAuditLog(env.KV, auditEntry).catch((err) =>
-                            console.error(`[auto-turnoff] Failed to write audit log: ${err}`),
-                          );
-                          if (sb) writeAuditLogToSupabase(sb, auditEntry).catch((err) =>
-                            console.error(`[supabase] audit write failed: ${err}`),
-                          );
-
-                          // Queue for secondary rescan
-                          const rescanEntry: RescanEntry = {
-                            workspaceId: workspace.id,
-                            workspaceName: workspace.name,
-                            campaignId: campaign.id,
-                            campaignName: campaign.name,
-                            stepIndex,
-                            variantIndex: kill.variantIndex,
-                            variantLabel: VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex),
-                            disabledAt: new Date().toISOString(),
-                            sent,
-                            opportunities,
-                            threshold,
-                            cmName,
-                            product: wsConfig.product,
-                          };
-                          await writeRescanEntry(env.KV, rescanEntry).catch((err) =>
-                            console.error(`[auto-turnoff] Failed to write rescan entry: ${err}`),
-                          );
-
-                          const killSlackResult = await sendKillNotification(killAction, channelId, env).catch((slackErr) => {
-                            console.error(
-                              `[auto-turnoff] Slack notification failed for ${campaign.name} step=${stepIndex} variant=${kill.variantIndex}: ${slackErr}`,
-                            );
-                            return { threadTs: null, replySuccess: false };
-                          });
-                          if (sb) writeNotificationToSupabase(sb, {
-                            timestamp: new Date().toISOString(),
-                            notification_type: 'KILL',
-                            channel_id: channelId,
-                            title: formatKillTitle(killAction),
-                            details: formatKillDetails(killAction),
-                            thread_ts: killSlackResult.threadTs,
-                            reply_success: killSlackResult.replySuccess,
-                            campaign_id: campaign.id,
-                            campaign_name: campaign.name,
-                            workspace_id: workspace.id,
-                            workspace_name: workspace.name,
-                            cm: cmName,
-                            step: stepIndex,
-                            variant: kill.variantIndex,
-                            variant_label: VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex),
-                            dry_run: isDryRun,
-                          }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
-
-                          // Write dedup key (7-day TTL, cleared if variant is re-enabled by rescan)
-                          await env.KV.put(killDedupKey, JSON.stringify({
-                            campaignId: campaign.id,
-                            stepIndex,
-                            variantIndex: kill.variantIndex,
-                            killedAt: new Date().toISOString(),
-                          }), { expirationTtl: KILL_DEDUP_TTL_SECONDS }).catch(() => {});
-                        } else {
-                          console.log(
-                            `[auto-turnoff] Kill dedup: already notified for ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — skipping`,
-                          );
-                        }
-                      } else {
-                        console.error(
-                          `[auto-turnoff] disableVariant returned false for ${campaign.name} step=${stepIndex} variant=${kill.variantIndex}`,
-                        );
-                        workspaceErrors++;
-                        totalErrors++;
-                      }
-                    } catch (killErr) {
-                      console.error(
-                        `[auto-turnoff] Error disabling variant — campaign=${campaign.name} step=${stepIndex} variant=${kill.variantIndex}: ${killErr}`,
+                    if (!alreadyKilled) {
+                      pendingKills.push({
+                        kill: killAction,
+                        auditEntry,
+                        stepIndex,
+                        channelId,
+                      });
+                    } else {
+                      console.log(
+                        `[auto-turnoff] Kill dedup: already notified for ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — skipping`,
                       );
-                      workspaceErrors++;
-                      totalErrors++;
                     }
                   }
                 }
@@ -778,48 +814,49 @@ export default {
                     survivingVariantCount: 0,
                   };
 
-                  // Dedup: only notify once per blocked variant
+                  totalVariantsBlocked++;
+
+                  const blockedTriggerRule =
+                    opportunities === 0
+                      ? `${sent} sent, 0 opportunities past ${threshold} sends`
+                      : `Ratio ${ratioValue}:1 exceeds threshold ${threshold}:1`;
+
+                  // ALWAYS write audit entry for blocked variants (every run, not deduped)
+                  const blockedAudit: AuditEntry = {
+                    timestamp: new Date().toISOString(),
+                    action: 'BLOCKED',
+                    workspace: workspace.name,
+                    workspaceId: workspace.id,
+                    campaign: campaign.name,
+                    campaignId: campaign.id,
+                    step: stepIndex + 1,
+                    variant: blocked.variantIndex,
+                    variantLabel: VARIANT_LABELS[blocked.variantIndex] ?? String(blocked.variantIndex),
+                    cm: cmName,
+                    product: wsConfig.product,
+                    trigger: { sent, opportunities, ratio: ratioValue, threshold, rule: blockedTriggerRule },
+                    safety: { survivingVariants: 0, notification: 'LAST_VARIANT' },
+                    dryRun: isDryRun,
+                  };
+
+                  await writeAuditLog(env.KV, blockedAudit).catch((err) =>
+                    console.error(`[auto-turnoff] Failed to write audit log: ${err}`),
+                  );
+                  if (sb) await writeAuditLogToSupabase(sb, blockedAudit).catch((err) =>
+                    console.error(`[supabase] blocked audit write failed: ${err}`),
+                  );
+
+                  // Dedup: only NOTIFY once per blocked variant (audit writes above are unconditional)
                   const blockedDedupKey = `blocked:${campaign.id}:${stepIndex}:${blocked.variantIndex}`;
                   const alreadyBlocked = await env.KV.get(blockedDedupKey);
 
-                  totalVariantsBlocked++;
-
                   if (!alreadyBlocked) {
-                    const blockedTriggerRule =
-                      opportunities === 0
-                        ? `${sent} sent, 0 opportunities past ${threshold} sends`
-                        : `Ratio ${ratioValue}:1 exceeds threshold ${threshold}:1`;
-
-                    const blockedAudit: AuditEntry = {
-                      timestamp: new Date().toISOString(),
-                      action: 'BLOCKED',
-                      workspace: workspace.name,
-                      workspaceId: workspace.id,
-                      campaign: campaign.name,
-                      campaignId: campaign.id,
-                      step: stepIndex,
-                      variant: blocked.variantIndex,
-                      variantLabel: VARIANT_LABELS[blocked.variantIndex] ?? String(blocked.variantIndex),
-                      cm: cmName,
-                      product: wsConfig.product,
-                      trigger: { sent, opportunities, ratio: ratioValue, threshold, rule: blockedTriggerRule },
-                      safety: { survivingVariants: 0, notification: 'LAST_VARIANT' },
-                      dryRun: isDryRun,
-                    };
-
-                    await writeAuditLog(env.KV, blockedAudit).catch((err) =>
-                      console.error(`[auto-turnoff] Failed to write audit log: ${err}`),
-                    );
-                    if (sb) writeAuditLogToSupabase(sb, blockedAudit).catch((err) =>
-                      console.error(`[supabase] blocked audit write failed: ${err}`),
-                    );
-
-                    if (isDryRun) {
+                    if (isDryRun || env.KILLS_ENABLED !== 'true') {
                       console.log(
-                        `[DRY RUN] BLOCKED (last variant): ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${blocked.variantIndex} → channel=${channelId || 'FALLBACK'} cm=${cmName ?? 'unknown'}`,
+                        `[${isDryRun ? 'DRY RUN' : 'KILLS PAUSED'}] BLOCKED (last variant): ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${blocked.variantIndex} → channel=${channelId || 'FALLBACK'} cm=${cmName ?? 'unknown'}`,
                       );
                       console.log(
-                        `[DRY RUN] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${threshold} — NOT killed, last active variant`,
+                        `[${isDryRun ? 'DRY RUN' : 'KILLS PAUSED'}] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${threshold} — NOT killed, last active variant`,
                       );
                     } else {
                       const blockedSlackResult = await sendLastVariantNotification(blockedAction, channelId, env).catch((slackErr) => {
@@ -828,7 +865,7 @@ export default {
                         );
                         return { threadTs: null, replySuccess: false };
                       });
-                      if (sb) writeNotificationToSupabase(sb, {
+                      if (sb) await writeNotificationToSupabase(sb, {
                         timestamp: new Date().toISOString(),
                         notification_type: 'LAST_VARIANT',
                         channel_id: channelId,
@@ -841,7 +878,7 @@ export default {
                         workspace_id: workspace.id,
                         workspace_name: workspace.name,
                         cm: cmName,
-                        step: stepIndex,
+                        step: stepIndex + 1,
                         variant: blocked.variantIndex,
                         variant_label: VARIANT_LABELS[blocked.variantIndex] ?? String(blocked.variantIndex),
                         dry_run: isDryRun,
@@ -884,7 +921,7 @@ export default {
                       workspaceId: workspace.id,
                       campaign: campaign.name,
                       campaignId: campaign.id,
-                      step: stepIndex,
+                      step: stepIndex + 1,
                       variant: warning.variantIndex,
                       variantLabel: warning.variantLabel,
                       cm: cmName,
@@ -905,7 +942,7 @@ export default {
                     await writeAuditLog(env.KV, warningAudit).catch((err) =>
                       console.error(`[auto-turnoff] Failed to write warning audit log: ${err}`),
                     );
-                    if (sb) writeAuditLogToSupabase(sb, warningAudit).catch((err) =>
+                    if (sb) await writeAuditLogToSupabase(sb, warningAudit).catch((err) =>
                       console.error(`[supabase] warning audit write failed: ${err}`),
                     );
 
@@ -921,7 +958,7 @@ export default {
                         return { threadTs: null, replySuccess: false };
                       });
                       await env.KV.put(dedupKey, '1', { expirationTtl: WARNING_DEDUP_TTL_SECONDS });
-                      if (sb) writeNotificationToSupabase(sb, {
+                      if (sb) await writeNotificationToSupabase(sb, {
                         timestamp: new Date().toISOString(),
                         notification_type: 'WARNING',
                         channel_id: channelId,
@@ -934,12 +971,148 @@ export default {
                         workspace_id: workspace.id,
                         workspace_name: workspace.name,
                         cm: cmName,
-                        step: stepIndex,
+                        step: stepIndex + 1,
                         variant: warning.variantIndex,
                         variant_label: warning.variantLabel,
                         dry_run: isDryRun,
                       }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
                     }
+                  }
+                }
+              }
+
+              // --- BATCH KILL EXECUTION ---
+              if (pendingKills.length > 0) {
+                const killsEnabled = env.KILLS_ENABLED === 'true';
+
+                if (!killsEnabled) {
+                  for (const pk of pendingKills) {
+                    // Write audit entry with BLOCKED action (kill was suppressed by KILLS_ENABLED=false)
+                    const pausedAudit: AuditEntry = {
+                      ...pk.auditEntry,
+                      action: 'BLOCKED',
+                      safety: {
+                        ...pk.auditEntry.safety,
+                        notification: pk.auditEntry.safety.notification ?? 'KILLS_PAUSED',
+                      },
+                    };
+                    await writeAuditLog(env.KV, pausedAudit).catch((err) =>
+                      console.error(`[auto-turnoff] Failed to write kills-paused audit log: ${err}`),
+                    );
+                    if (sb) await writeAuditLogToSupabase(sb, pausedAudit).catch((err) =>
+                      console.error(`[supabase] kills-paused audit write failed: ${err}`),
+                    );
+                    totalVariantsBlocked++;
+                    console.log(
+                      `[auto-turnoff] KILLS PAUSED: would disable ${campaign.name} Step ${pk.stepIndex + 1} Variant ${pk.kill.variantIndex} — logged as BLOCKED, skipping Instantly API call`,
+                    );
+                  }
+                } else {
+                  try {
+                    // 1. Fetch FRESH campaign details (single read)
+                    const freshDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
+                    const cloned = structuredClone(freshDetail.sequences);
+
+                    // 2. Apply all disables to the clone
+                    for (const pk of pendingKills) {
+                      const v = cloned?.[0]?.steps?.[pk.stepIndex]?.variants?.[pk.kill.variantIndex];
+                      if (v) v.v_disabled = true;
+                    }
+
+                    // 3. Single update_campaign call
+                    if (instantly instanceof InstantlyDirectApi) {
+                      await instantly.updateCampaign(workspace.id, campaign.id, { sequences: cloned });
+                    } else {
+                      await mcp.callTool('update_campaign', {
+                        workspace_id: workspace.id,
+                        campaign_id: campaign.id,
+                        updates: { sequences: cloned },
+                      });
+                    }
+
+                    // 4. Single verification
+                    const verified = await instantly.getCampaignDetails(workspace.id, campaign.id);
+
+                    // 5. Check each variant individually
+                    for (const pk of pendingKills) {
+                      const v = verified.sequences?.[0]?.steps?.[pk.stepIndex]?.variants?.[pk.kill.variantIndex];
+                      const isDisabled = v?.v_disabled === true;
+
+                      if (isDisabled) {
+                        workspaceKills++;
+                        totalVariantsKilled++;
+
+                        await writeAuditLog(env.KV, pk.auditEntry).catch((err) =>
+                          console.error(`[auto-turnoff] Failed to write audit log: ${err}`),
+                        );
+                        if (sb) await writeAuditLogToSupabase(sb, pk.auditEntry).catch((err) =>
+                          console.error(`[supabase] audit write failed: ${err}`),
+                        );
+
+                        const rescanEntry: RescanEntry = {
+                          workspaceId: workspace.id,
+                          workspaceName: workspace.name,
+                          campaignId: campaign.id,
+                          campaignName: campaign.name,
+                          stepIndex: pk.stepIndex,
+                          variantIndex: pk.kill.variantIndex,
+                          variantLabel: VARIANT_LABELS[pk.kill.variantIndex] ?? String(pk.kill.variantIndex),
+                          disabledAt: new Date().toISOString(),
+                          sent: pk.kill.sent,
+                          opportunities: pk.kill.opportunities,
+                          threshold: pk.kill.threshold,
+                          cmName,
+                          product: wsConfig.product,
+                        };
+                        await writeRescanEntry(env.KV, rescanEntry).catch((err) =>
+                          console.error(`[auto-turnoff] Failed to write rescan entry: ${err}`),
+                        );
+
+                        const killSlackResult = await sendKillNotification(pk.kill, pk.channelId, env).catch((slackErr) => {
+                          console.error(
+                            `[auto-turnoff] Slack notification failed for ${campaign.name} step=${pk.stepIndex} variant=${pk.kill.variantIndex}: ${slackErr}`,
+                          );
+                          return { threadTs: null, replySuccess: false };
+                        });
+                        if (sb) await writeNotificationToSupabase(sb, {
+                          timestamp: new Date().toISOString(),
+                          notification_type: 'KILL',
+                          channel_id: pk.channelId,
+                          title: formatKillTitle(pk.kill),
+                          details: formatKillDetails(pk.kill),
+                          thread_ts: killSlackResult.threadTs,
+                          reply_success: killSlackResult.replySuccess,
+                          campaign_id: campaign.id,
+                          campaign_name: campaign.name,
+                          workspace_id: workspace.id,
+                          workspace_name: workspace.name,
+                          cm: cmName,
+                          step: pk.stepIndex + 1,
+                          variant: pk.kill.variantIndex,
+                          variant_label: VARIANT_LABELS[pk.kill.variantIndex] ?? String(pk.kill.variantIndex),
+                          dry_run: isDryRun,
+                        }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+
+                        // Write dedup key (7-day TTL, cleared if variant is re-enabled by rescan)
+                        const killDedupKey = `kill:${campaign.id}:${pk.stepIndex}:${pk.kill.variantIndex}`;
+                        await env.KV.put(killDedupKey, JSON.stringify({
+                          campaignId: campaign.id,
+                          stepIndex: pk.stepIndex,
+                          variantIndex: pk.kill.variantIndex,
+                          killedAt: new Date().toISOString(),
+                        }), { expirationTtl: KILL_DEDUP_TTL_SECONDS }).catch(() => {});
+                      } else {
+                        console.warn(`[auto-turnoff] Batch verify failed: ${campaign.name} step=${pk.stepIndex} variant=${pk.kill.variantIndex}`);
+                        workspaceErrors++;
+                        totalErrors++;
+                      }
+                    }
+                  } catch (batchErr) {
+                    console.error(`[auto-turnoff] Batch kill failed for ${campaign.name}: ${batchErr}`);
+                    // No fallback to individual kills (same race condition).
+                    // Variants remain enabled and will be re-evaluated next cron run.
+                    workspaceErrors += pendingKills.length;
+                    totalErrors += pendingKills.length;
                   }
                 }
               }
@@ -951,9 +1124,22 @@ export default {
             }
           });
 
-          console.log(
-            `[auto-turnoff] Workspace ${workspace.name} complete — kills=${workspaceKills} errors=${workspaceErrors}`,
-          );
+          console.log(JSON.stringify({
+            event: 'workspace_complete',
+            workspace: workspace.name,
+            campaigns: activeCampaigns.length,
+            kills: workspaceKills,
+            errors: workspaceErrors,
+            elapsedMs: Date.now() - runStart,
+          }));
+
+          // KV heartbeat every 10 campaigns (verifies KV writes work in prod)
+          if (totalCampaignsEvaluated % 10 === 0 && totalCampaignsEvaluated > 0) {
+            await env.KV.put('heartbeat', JSON.stringify({
+              timestamp: new Date().toISOString(),
+              campaignsProcessed: totalCampaignsEvaluated,
+            }), { expirationTtl: 3600 }).catch(() => {});
+          }
         } catch (wsErr) {
           console.error(
             `[auto-turnoff] Error processing workspace ${workspace.name} (${workspace.id}): ${wsErr}`,
@@ -963,6 +1149,7 @@ export default {
       }
 
       // 5. PHASE 2: RESCAN DISABLED VARIANTS FOR LATE-ARRIVING OPPORTUNITIES
+      console.log(JSON.stringify({ event: 'phase_start', phase: 'rescan', elapsedMs: Date.now() - runStart }));
       try {
         const rescanKeys = await env.KV.list({ prefix: 'rescan:' });
         const totalInQueue = rescanKeys.keys.length;
@@ -999,7 +1186,9 @@ export default {
             let expiredOpps = entry.opportunities;
             let ruleNote = '';
             try {
-              const freshAnalytics = await instantly.getStepAnalytics(entry.workspaceId, entry.campaignId);
+              const freshAnalytics = await instantly.getStepAnalytics(
+                entry.workspaceId, entry.campaignId,
+              );
               const variantRow = freshAnalytics.find(
                 (a) => parseInt(a.step, 10) === entry.stepIndex && parseInt(a.variant, 10) === entry.variantIndex,
               );
@@ -1020,7 +1209,7 @@ export default {
               workspaceId: entry.workspaceId,
               campaign: entry.campaignName,
               campaignId: entry.campaignId,
-              step: entry.stepIndex,
+              step: entry.stepIndex + 1,
               variant: entry.variantIndex,
               variantLabel: entry.variantLabel,
               cm: entry.cmName,
@@ -1039,7 +1228,7 @@ export default {
             await writeAuditLog(env.KV, expiredAudit).catch((err) =>
               console.error(`[auto-turnoff] Failed to write EXPIRED audit log: ${err}`),
             );
-            if (sb) writeAuditLogToSupabase(sb, expiredAudit).catch((err) =>
+            if (sb) await writeAuditLogToSupabase(sb, expiredAudit).catch((err) =>
               console.error(`[supabase] expired audit write failed: ${err}`),
             );
 
@@ -1060,8 +1249,13 @@ export default {
           );
 
           try {
-            // Fetch fresh analytics
-            const freshAnalytics = await instantly.getStepAnalytics(entry.workspaceId, entry.campaignId);
+            // Fetch campaign details (needed for re-enable if rescan passes)
+            const campaignDetail = await instantly.getCampaignDetails(entry.workspaceId, entry.campaignId);
+
+            // Fetch fresh analytics (unfiltered — validated as accurate)
+            const freshAnalytics = await instantly.getStepAnalytics(
+              entry.workspaceId, entry.campaignId,
+            );
             const variantRow = freshAnalytics.find(
               (a) => parseInt(a.step, 10) === entry.stepIndex && parseInt(a.variant, 10) === entry.variantIndex,
             );
@@ -1082,8 +1276,7 @@ export default {
                 ? 'Infinity'
                 : (variantRow.sent / variantRow.opportunities).toFixed(1);
 
-              // Verify variant is still disabled before re-enabling
-              const campaignDetail = await instantly.getCampaignDetails(entry.workspaceId, entry.campaignId);
+              // Verify variant is still disabled before re-enabling (campaignDetail already fetched above)
               const variant = campaignDetail.sequences?.[0]?.steps?.[entry.stepIndex]?.variants?.[entry.variantIndex];
 
               if (!variant) {
@@ -1104,7 +1297,7 @@ export default {
                   workspaceId: entry.workspaceId,
                   campaign: entry.campaignName,
                   campaignId: entry.campaignId,
-                  step: entry.stepIndex,
+                  step: entry.stepIndex + 1,
                   variant: entry.variantIndex,
                   variantLabel: entry.variantLabel,
                   cm: entry.cmName,
@@ -1123,7 +1316,7 @@ export default {
                 await writeAuditLog(env.KV, overrideAudit).catch((err) =>
                   console.error(`[auto-turnoff] Failed to write CM_OVERRIDE audit log: ${err}`),
                 );
-                if (sb) writeAuditLogToSupabase(sb, overrideAudit).catch((err) =>
+                if (sb) await writeAuditLogToSupabase(sb, overrideAudit).catch((err) =>
                   console.error(`[supabase] cm_override audit write failed: ${err}`),
                 );
 
@@ -1167,7 +1360,7 @@ export default {
                       return { threadTs: null, replySuccess: false };
                     },
                   );
-                  if (sb) writeNotificationToSupabase(sb, {
+                  if (sb) await writeNotificationToSupabase(sb, {
                     timestamp: new Date().toISOString(),
                     notification_type: 'RESCAN_RE_ENABLED',
                     channel_id: rescanChannelId,
@@ -1180,7 +1373,7 @@ export default {
                     workspace_id: entry.workspaceId,
                     workspace_name: entry.workspaceName,
                     cm: entry.cmName,
-                    step: entry.stepIndex,
+                    step: entry.stepIndex + 1,
                     variant: entry.variantIndex,
                     variant_label: entry.variantLabel,
                     dry_run: isDryRun,
@@ -1204,7 +1397,7 @@ export default {
                 workspaceId: entry.workspaceId,
                 campaign: entry.campaignName,
                 campaignId: entry.campaignId,
-                step: entry.stepIndex,
+                step: entry.stepIndex + 1,
                 variant: entry.variantIndex,
                 variantLabel: entry.variantLabel,
                 cm: entry.cmName,
@@ -1225,7 +1418,7 @@ export default {
               await writeAuditLog(env.KV, reEnableAudit).catch((err) =>
                 console.error(`[auto-turnoff] Failed to write rescan audit log: ${err}`),
               );
-              if (sb) writeAuditLogToSupabase(sb, reEnableAudit).catch((err) =>
+              if (sb) await writeAuditLogToSupabase(sb, reEnableAudit).catch((err) =>
                 console.error(`[supabase] re_enabled audit write failed: ${err}`),
               );
             } else {
@@ -1252,21 +1445,70 @@ export default {
       }
 
       // PHASE 3: LEADS DEPLETION MONITOR
+      console.log(JSON.stringify({ event: 'phase_start', phase: 'leads', elapsedMs: Date.now() - runStart, candidates: leadsCheckCandidates.length }));
       try {
-        if (leadsCheckCandidates.length > 0) {
+        if (leadsCheckCandidates.length === 0) {
+          console.warn(`[auto-turnoff] Leads check: 0 candidates collected — campaigns may be missing daily_limit field. Evaluated ${totalCampaignsEvaluated} campaigns in Phase 1.`);
+        } else {
           console.log(`[auto-turnoff] Leads check: evaluating ${leadsCheckCandidates.length} campaigns`);
+        }
+
+        // Batch fetch analytics for all workspaces represented in the candidate list
+        const workspaceIds = [...new Set(leadsCheckCandidates.map((c) => c.workspaceId))];
+        const batchByWorkspace = new Map<string, Map<string, {
+          leads_count: number; contacted: number; completed_count: number;
+          bounced_count: number; unsubscribed_count: number;
+        }>>();
+
+        if (useDirectApi && leadsCheckCandidates.length > 0) {
+          const directApi = instantly as InstantlyDirectApi;
+          for (const wsId of workspaceIds) {
+            try {
+              const batchMap = await directApi.getBatchCampaignAnalytics(wsId);
+              batchByWorkspace.set(wsId, batchMap);
+            } catch (batchErr) {
+              console.error(`[auto-turnoff] Batch analytics fetch failed for workspace ${wsId}: ${batchErr}`);
+              totalErrors++;
+            }
+          }
         }
 
         for (const candidate of leadsCheckCandidates) {
           try {
-            // Fetch lead counts (one new API call per campaign)
-            const leadCounts = await instantly.countLeads(candidate.workspaceId, candidate.campaignId);
-            const totalLeads = leadCounts.total_leads;
-            const bounced = leadCounts.status.bounced;
-            const skipped = leadCounts.status.skipped;
+            let totalLeads: number;
+            let contacted: number;
+            let completed: number;
+            let bounced: number;
+            let unsubscribed: number;
 
-            // Compute uncontacted using step 0 sent (collected in Phase 1)
-            const uncontacted = computeUncontacted(totalLeads, candidate.step0Sent, bounced, skipped);
+            if (useDirectApi) {
+              const wsMap = batchByWorkspace.get(candidate.workspaceId);
+              const data = wsMap?.get(candidate.campaignId);
+              if (!data) {
+                console.warn(`[auto-turnoff] No batch analytics for campaign ${candidate.campaignId} — skipping`);
+                continue;
+              }
+              totalLeads = data.leads_count;
+              contacted = data.contacted;
+              completed = data.completed_count;
+              bounced = data.bounced_count;
+              unsubscribed = data.unsubscribed_count;
+            } else {
+              // MCP fallback path (non-direct mode)
+              const [leadCounts, campaignAnalytics] = await Promise.all([
+                mcpApi.countLeads(candidate.workspaceId, candidate.campaignId),
+                mcpApi.getCampaignAnalytics(candidate.workspaceId, candidate.campaignId),
+              ]);
+              totalLeads = leadCounts.total_leads;
+              const s = leadCounts.status;
+              contacted = campaignAnalytics.contacted;
+              completed = s.completed;
+              bounced = s.bounced;
+              unsubscribed = s.unsubscribed;
+            }
+
+            // Compute uncontacted (leads that have never received an email)
+            const uncontacted = computeUncontacted(totalLeads, contacted);
 
             // Evaluate
             const result = evaluateLeadDepletion(uncontacted, candidate.dailyLimit, totalLeads);
@@ -1315,10 +1557,13 @@ export default {
                 cm: candidate.cmName,
                 leads: {
                   total: totalLeads,
+                  contacted,
                   uncontacted: 0,
-                  step0Sent: candidate.step0Sent,
+                  completed,
+                  active: totalLeads - completed,
                   bounced,
-                  skipped,
+                  skipped: 0,
+                  unsubscribed,
                   dailyLimit: candidate.dailyLimit,
                 },
                 dryRun: isDryRun,
@@ -1328,7 +1573,7 @@ export default {
                 JSON.stringify(auditEntry),
                 { expirationTtl: 90 * 86400 },
               );
-              if (sb) writeLeadsAuditToSupabase(sb, auditEntry).catch((err) =>
+              if (sb) await writeLeadsAuditToSupabase(sb, auditEntry).catch((err) =>
                 console.error(`[supabase] leads_exhausted audit write failed: ${err}`),
               );
 
@@ -1336,18 +1581,19 @@ export default {
               const exhaustedSlackResult = await sendLeadsExhaustedNotification(
                 candidate,
                 totalLeads,
+                totalLeads - completed,
                 candidate.channelId,
                 env,
               ).catch((err) => {
                 console.error(`[auto-turnoff] Leads exhausted Slack notification failed: ${err}`);
                 return { threadTs: null, replySuccess: false };
               });
-              if (sb) writeNotificationToSupabase(sb, {
+              if (sb) await writeNotificationToSupabase(sb, {
                 timestamp: new Date().toISOString(),
                 notification_type: 'LEADS_EXHAUSTED',
                 channel_id: candidate.channelId,
                 title: formatLeadsExhaustedTitle(),
-                details: formatLeadsExhaustedDetails(candidate, totalLeads),
+                details: formatLeadsExhaustedDetails(candidate, totalLeads, totalLeads - completed),
                 thread_ts: exhaustedSlackResult.threadTs,
                 reply_success: exhaustedSlackResult.replySuccess,
                 campaign_id: candidate.campaignId,
@@ -1405,10 +1651,13 @@ export default {
                 cm: candidate.cmName,
                 leads: {
                   total: totalLeads,
+                  contacted,
                   uncontacted,
-                  step0Sent: candidate.step0Sent,
+                  completed,
+                  active: totalLeads - completed,
                   bounced,
-                  skipped,
+                  skipped: 0,
+                  unsubscribed,
                   dailyLimit: candidate.dailyLimit,
                 },
                 dryRun: isDryRun,
@@ -1418,7 +1667,7 @@ export default {
                 JSON.stringify(auditEntry),
                 { expirationTtl: 90 * 86400 },
               );
-              if (sb) writeLeadsAuditToSupabase(sb, auditEntry).catch((err) =>
+              if (sb) await writeLeadsAuditToSupabase(sb, auditEntry).catch((err) =>
                 console.error(`[supabase] leads_warning audit write failed: ${err}`),
               );
 
@@ -1433,7 +1682,7 @@ export default {
                 console.error(`[auto-turnoff] Leads warning Slack notification failed: ${err}`);
                 return { threadTs: null, replySuccess: false };
               });
-              if (sb) writeNotificationToSupabase(sb, {
+              if (sb) await writeNotificationToSupabase(sb, {
                 timestamp: new Date().toISOString(),
                 notification_type: 'LEADS_WARNING',
                 channel_id: candidate.channelId,
@@ -1478,10 +1727,13 @@ export default {
                   cm: candidate.cmName,
                   leads: {
                     total: totalLeads,
+                    contacted,
                     uncontacted,
-                    step0Sent: candidate.step0Sent,
+                    completed,
+                    active: totalLeads - completed,
                     bounced,
-                    skipped,
+                    skipped: 0,
+                    unsubscribed,
                     dailyLimit: candidate.dailyLimit,
                   },
                   dryRun: isDryRun,
@@ -1491,7 +1743,7 @@ export default {
                   JSON.stringify(auditEntry),
                   { expirationTtl: 90 * 86400 },
                 );
-                if (sb) writeLeadsAuditToSupabase(sb, auditEntry).catch((err) =>
+                if (sb) await writeLeadsAuditToSupabase(sb, auditEntry).catch((err) =>
                   console.error(`[supabase] leads_recovered audit write failed: ${err}`),
                 );
 
@@ -1500,6 +1752,7 @@ export default {
               }
             }
           } catch (err) {
+            totalErrors++;
             console.error(
               `[auto-turnoff] Leads check error for "${candidate.campaignName}": ${err}`,
             );
@@ -1513,6 +1766,141 @@ export default {
         }
       } catch (leadsPhaseErr) {
         console.error(`[auto-turnoff] Leads depletion phase error: ${leadsPhaseErr}`);
+      }
+
+      // -----------------------------------------------------------------------
+      // PHASE 4: KILL PERSISTENCE MONITOR
+      // -----------------------------------------------------------------------
+      console.log(JSON.stringify({ event: 'phase_start', phase: 'persistence', elapsedMs: Date.now() - runStart }));
+      let ghostCount = 0;
+      const MAX_PERSISTENCE_CHECKS = 20;
+      let persistenceChecks = 0;
+
+      try {
+        // 1. List all kill dedup keys from KV
+        const killKeys = await env.KV.list({ prefix: 'kill:' });
+
+        // 2. Group by campaignId
+        const killsByCampaign = new Map<string, Array<{
+          key: string;
+          campaignId: string;
+          stepIndex: number;
+          variantIndex: number;
+          killedAt: string;
+        }>>();
+
+        for (const key of killKeys.keys) {
+          if (persistenceChecks >= MAX_PERSISTENCE_CHECKS) break;
+
+          const raw = await env.KV.get(key.name);
+          if (!raw) continue;
+
+          try {
+            const data = JSON.parse(raw) as {
+              campaignId: string;
+              stepIndex: number;
+              variantIndex: number;
+              killedAt: string;
+            };
+
+            const list = killsByCampaign.get(data.campaignId) ?? [];
+            list.push({ key: key.name, ...data });
+            killsByCampaign.set(data.campaignId, list);
+            persistenceChecks++;
+          } catch { continue; }
+        }
+
+        // 3. For each campaign, check if kills persisted
+        for (const [campaignId, kills] of killsByCampaign) {
+          const firstKill = kills[0];
+          // Resolve workspace from rescan entry
+          const rescanKey = `rescan:${campaignId}:${firstKill.stepIndex}:${firstKill.variantIndex}`;
+          const rescanRaw = await env.KV.get(rescanKey);
+          let workspaceId: string | null = null;
+          let workspaceName = '';
+          let cmName: string | null = null;
+          let campaignName = '';
+          let product: string = 'FUNDING';
+
+          if (rescanRaw) {
+            try {
+              const rescan = JSON.parse(rescanRaw) as RescanEntry;
+              workspaceId = rescan.workspaceId;
+              workspaceName = rescan.workspaceName;
+              cmName = rescan.cmName;
+              campaignName = rescan.campaignName;
+              product = rescan.product;
+            } catch { /* skip */ }
+          }
+
+          if (!workspaceId) {
+            console.log(`[auto-turnoff] Persistence check: no workspace found for campaign ${campaignId}, skipping`);
+            continue;
+          }
+
+          try {
+            const detail = await instantly.getCampaignDetails(workspaceId, campaignId);
+            campaignName = campaignName || detail.name;
+
+            for (const kill of kills) {
+              const variant = detail.sequences?.[0]?.steps?.[kill.stepIndex]?.variants?.[kill.variantIndex];
+              if (!variant) continue;
+
+              if (variant.v_disabled !== true) {
+                // GHOST RE-ENABLE DETECTED
+                ghostCount++;
+                const variantLabel = VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex);
+
+                console.warn(
+                  `[auto-turnoff] GHOST RE-ENABLE: ${campaignName} Step ${kill.stepIndex + 1} ` +
+                  `Variant ${variantLabel} was disabled at ${kill.killedAt} but is now enabled`
+                );
+
+                const ghostAudit: AuditEntry = {
+                  timestamp: new Date().toISOString(),
+                  action: 'GHOST_REENABLE',
+                  workspace: workspaceName,
+                  workspaceId,
+                  campaign: campaignName,
+                  campaignId,
+                  step: kill.stepIndex + 1,
+                  variant: kill.variantIndex,
+                  variantLabel,
+                  cm: cmName,
+                  product: product as any,
+                  trigger: {
+                    sent: 0,
+                    opportunities: 0,
+                    ratio: '0',
+                    threshold: 0,
+                    rule: `Ghost re-enable: disabled at ${kill.killedAt}, found enabled at ${new Date().toISOString()}`,
+                  },
+                  safety: {
+                    survivingVariants: -1,
+                    notification: null,
+                  },
+                  dryRun: isDryRun,
+                };
+
+                await writeAuditLog(env.KV, ghostAudit).catch(() => {});
+                if (sb) await writeAuditLogToSupabase(sb, ghostAudit).catch(() => {});
+
+                // Clean up the kill dedup key since the variant is no longer disabled
+                await env.KV.delete(kill.key).catch(() => {});
+              }
+            }
+          } catch (err) {
+            console.error(`[auto-turnoff] Persistence check failed for campaign ${campaignId}: ${err}`);
+          }
+        }
+      } catch (err) {
+        console.error(`[auto-turnoff] Phase 4 persistence monitor error: ${err}`);
+      }
+
+      if (ghostCount > 0) {
+        console.warn(`[auto-turnoff] Phase 4 complete: ${ghostCount} ghost re-enables detected`);
+      } else {
+        console.log(`[auto-turnoff] Phase 4 complete: all ${persistenceChecks} kills verified persistent`);
       }
 
       // 6. WRITE DAILY SNAPSHOT
@@ -1544,7 +1932,7 @@ export default {
       await env.KV.put(`snapshot:${snapshotDate}`, JSON.stringify(dailySnapshot), { expirationTtl: 90 * 86400 }).catch((err) =>
         console.error(`[auto-turnoff] Failed to write daily snapshot: ${err}`),
       );
-      if (sb) writeDailySnapshotToSupabase(sb, dailySnapshot).catch((err) =>
+      if (sb) await writeDailySnapshotToSupabase(sb, dailySnapshot).catch((err) =>
         console.error(`[supabase] daily snapshot write failed: ${err}`),
       );
 
@@ -1576,51 +1964,28 @@ export default {
         leadsWarnings: totalLeadsWarnings,
         leadsExhausted: totalLeadsExhausted,
         leadsRecovered: totalLeadsRecovered,
+        ghostReEnables: ghostCount,
         dryRun: isDryRun,
       };
 
       await writeRunSummary(env.KV, runSummary).catch((err) =>
         console.error(`[auto-turnoff] Failed to write run summary: ${err}`),
       );
-      if (sb) writeRunSummaryToSupabase(sb, runSummary).catch((err) =>
+      if (sb) await writeRunSummaryToSupabase(sb, runSummary).catch((err) =>
         console.error(`[supabase] run summary write failed: ${err}`),
       );
     } finally {
-      // 8. RELEASE LOCK
+      // RELEASE LOCK
       await releaseLock(env.KV).catch((err) =>
         console.error(`[auto-turnoff] Failed to release lock: ${err}`),
       );
 
-      // 9. CLOSE MCP
+      // CLOSE MCP (no-op if never connected)
       await mcp.close().catch((err) =>
         console.error(`[auto-turnoff] Failed to close MCP client: ${err}`),
       );
     }
-  },
-
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const url = new URL(request.url);
-
-    if (url.pathname === '/__scheduled') {
-      await this.scheduled({ scheduledTime: Date.now(), cron: '0 * * * *' } as ScheduledEvent, env, ctx);
-      return new Response('Scheduled run complete. Check console logs for output.');
-    }
-
-    if (url.pathname === '/__dashboard') {
-      return serveDashboard(env.KV, url.searchParams);
-    }
-
-    if (url.pathname === '/__baseline') {
-      return serveBaseline(env, url.searchParams);
-    }
-
-    if (url.pathname === '/__backfill') {
-      return backfillKvToSupabase(env, url.searchParams);
-    }
-
-    return new Response('Auto Turn-Off Worker. Use /__scheduled to trigger manually, /__baseline to capture a baseline.', { status: 200 });
-  },
-};
+}
 
 // ---------------------------------------------------------------------------
 // One-time KV -> Supabase backfill (runs inside worker, no rate limits)

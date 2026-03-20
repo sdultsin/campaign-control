@@ -1,6 +1,11 @@
 import { PROVIDER_THRESHOLDS, DEFAULT_THRESHOLD, PRODUCT_THRESHOLDS, getWorkspaceConfig } from './config';
 import type { CampaignDetail } from './types';
-import type { InstantlyApi } from './instantly';
+
+/** Minimal API interface used by threshold resolution (works with both MCP and direct clients) */
+export interface ThresholdApi {
+  listAccounts(workspaceId: string, tagIds: string): Promise<Array<{ email?: string; provider_code?: number; [key: string]: unknown }>>;
+  getAccount(workspaceId: string, email: string): Promise<{ provider_code?: number; [key: string]: unknown }>;
+}
 
 /**
  * Resolve the kill threshold for a campaign.
@@ -9,7 +14,7 @@ import type { InstantlyApi } from './instantly';
 export async function resolveThreshold(
   workspaceId: string,
   campaign: CampaignDetail,
-  api: InstantlyApi,
+  api: ThresholdApi,
   kv: KVNamespace,
 ): Promise<number | null> {
   const config = getWorkspaceConfig(workspaceId);
@@ -29,7 +34,7 @@ export async function resolveThreshold(
 export async function getInfraThreshold(
   workspaceId: string,
   campaign: CampaignDetail,
-  api: InstantlyApi,
+  api: ThresholdApi,
   kv: KVNamespace,
 ): Promise<number> {
   const cacheKey = `infra:${campaign.id}`;

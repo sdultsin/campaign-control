@@ -35,12 +35,21 @@ export class McpClient {
     });
 
     // Start background pump
-    this.pump().catch((err) => {
-      // SSE stream dropped — reject all pending requests
+    this.pump().then(() => {
+      // SSE stream closed cleanly (e.g., server idle timeout) — reject all pending
+      const dropErr = new Error('SSE stream closed (server may have timed out idle connection)');
+      for (const { reject } of this.pending.values()) {
+        reject(dropErr);
+      }
+      this.pending.clear();
+      this.endpoint = null; // Mark as disconnected so callTool throws immediately
+    }).catch((err) => {
+      // SSE stream dropped with error — reject all pending requests
       for (const { reject } of this.pending.values()) {
         reject(err instanceof Error ? err : new Error(String(err)));
       }
       this.pending.clear();
+      this.endpoint = null; // Mark as disconnected
     });
 
     this.endpoint = await endpointPromise;

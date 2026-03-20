@@ -44,7 +44,6 @@ export interface LeadsCheckCandidate {
   campaignName: string;
   cmName: string | null;
   dailyLimit: number;
-  step0Sent: number;
   channelId: string;
 }
 
@@ -80,10 +79,15 @@ export interface LeadsAuditEntry {
   cm: string | null;
   leads: {
     total: number;
+    contacted: number;
     uncontacted: number;
-    step0Sent: number;
+    completed: number;
+    /** Approximated as total - completed when using direct API (analytics endpoint does not return per-status lead counts) */
+    active: number;
     bounced: number;
+    /** Not available from analytics endpoint; set to 0 when using direct API */
     skipped: number;
+    unsubscribed: number;
     dailyLimit: number;
   };
   dryRun: boolean;
@@ -124,6 +128,7 @@ export interface CampaignDetail {
   status: string;
   sequences: Sequence[];
   email_tag_list?: string[];
+  timestamp_created?: string;
   [key: string]: unknown;
 }
 
@@ -168,6 +173,8 @@ export interface Env {
   SUPABASE_URL: string;
   SUPABASE_ANON_KEY: string;
   KILLS_ENABLED: string;
+  INSTANTLY_API_KEYS: string;  // JSON map: { "workspace-slug-or-name": "base64-api-key", ... }
+  INSTANTLY_MODE: string; // "direct" | "mcp"
 }
 
 export interface LastVariantWarning {
@@ -199,11 +206,12 @@ export interface RescanEntry {
 
 export interface AuditEntry {
   timestamp: string;
-  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED';
+  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE';
   workspace: string;
   workspaceId: string;
   campaign: string;
   campaignId: string;
+  /** 1-indexed step number matching Instantly UI and Slack display */
   step: number;
   variant: number;
   variantLabel: string;
@@ -240,6 +248,7 @@ export interface RunSummary {
   leadsWarnings: number;
   leadsExhausted: number;
   leadsRecovered: number;
+  ghostReEnables: number;
   dryRun: boolean;
 }
 
