@@ -508,11 +508,8 @@ async function executeScheduledRun(env: Env): Promise<void> {
               // a. Get campaign details first (need sequences for kill writes)
               const campaignDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
 
-              // b. Get step analytics (date-filtered for accuracy)
-              const createdDate = (campaignDetail as Record<string, unknown>).timestamp_created as string | undefined;
-              const startDate = createdDate ? createdDate.split('T')[0] : undefined;
-              const endDate = new Date().toISOString().split('T')[0];
-              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id, startDate, endDate);
+              // b. Get step analytics (unfiltered -- date filters drop opps, see 2026-03-18 bug)
+              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
 
               // c. Sequences guard
               if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) {
