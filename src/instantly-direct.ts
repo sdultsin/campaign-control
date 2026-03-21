@@ -162,7 +162,7 @@ export class InstantlyDirectApi {
     contacted: number; sent: number;
   }> {
     const key = this.getKey(workspaceId);
-    const raw = await this.get<Record<string, unknown>>(`/campaigns/${campaignId}/analytics`, key);
+    const raw = await this.get<Record<string, unknown>>('/campaigns/analytics', key, { campaign_id: campaignId });
     // Response could be { campaigns: [{...}] } or direct object
     if (Array.isArray((raw as any).campaigns) && (raw as any).campaigns.length > 0) {
       const c = (raw as any).campaigns[0];
