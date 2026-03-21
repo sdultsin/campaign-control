@@ -1,6 +1,128 @@
 import type { KillAction, Env, LastVariantWarning, RescanEntry, LeadsCheckCandidate } from './types';
 import { VARIANT_LABELS } from './config';
 
+// ---------------------------------------------------------------------------
+// Notification types & grouped titles
+// ---------------------------------------------------------------------------
+
+export type SlackNotificationType =
+  | 'KILL'
+  | 'LAST_VARIANT'
+  | 'WARNING'
+  | 'RESCAN_RE_ENABLED'
+  | 'LEADS_EXHAUSTED'
+  | 'LEADS_WARNING';
+
+const GROUP_TITLES: Record<SlackNotificationType, (count: number) => string> = {
+  KILL: (n) => `:rotating_light: Variants Automatically Disabled (${n})`,
+  LAST_VARIANT: (n) => `:warning: Last Variant — Cannot Disable (${n})`,
+  WARNING: (n) => `:eyes: Variants Approaching Threshold (${n})`,
+  RESCAN_RE_ENABLED: (n) => `:white_check_mark: Variants Re-enabled (${n})`,
+  LEADS_EXHAUSTED: (n) => `:red_circle: Leads Exhausted (${n} campaign${n === 1 ? '' : 's'})`,
+  LEADS_WARNING: (n) => `:warning: Leads Running Low (${n} campaign${n === 1 ? '' : 's'})`,
+};
+
+export interface NotificationMeta {
+  timestamp: string;
+  notification_type: string;
+  campaign_id: string | null;
+  campaign_name: string | null;
+  workspace_id: string | null;
+  workspace_name: string | null;
+  cm: string | null;
+  step: number | null;
+  variant: number | null;
+  variant_label: string | null;
+  dry_run: boolean;
+}
+
+export interface FlushResult {
+  channelId: string;
+  type: SlackNotificationType;
+  title: string;
+  threadTs: string | null;
+  items: Array<{
+    detail: string;
+    replySuccess: boolean;
+    meta: NotificationMeta;
+  }>;
+}
+
+// ---------------------------------------------------------------------------
+// Notification Collector — groups notifications by (channel, type)
+// One parent message per type, individual details as thread replies
+// ---------------------------------------------------------------------------
+
+export class NotificationCollector {
+  private buckets = new Map<string, Map<SlackNotificationType, Array<{ detail: string; meta: NotificationMeta }>>>();
+
+  add(channelId: string, type: SlackNotificationType, detail: string, meta: NotificationMeta): void {
+    if (!this.buckets.has(channelId)) {
+      this.buckets.set(channelId, new Map());
+    }
+    const channelBuckets = this.buckets.get(channelId)!;
+    if (!channelBuckets.has(type)) {
+      channelBuckets.set(type, []);
+    }
+    channelBuckets.get(type)!.push({ detail, meta });
+  }
+
+  /** Total pending notifications across all channels and types */
+  get size(): number {
+    let total = 0;
+    for (const types of this.buckets.values()) {
+      for (const items of types.values()) {
+        total += items.length;
+      }
+    }
+    return total;
+  }
+
+  async flush(token: string, isDryRun: boolean): Promise<FlushResult[]> {
+    const results: FlushResult[] = [];
+
+    for (const [channelId, types] of this.buckets) {
+      for (const [type, items] of types) {
+        if (items.length === 0) continue;
+
+        const title = GROUP_TITLES[type](items.length);
+
+        if (isDryRun) {
+          console.log(`[DRY RUN] ${title} → channel=${channelId}`);
+          for (const item of items) {
+            console.log(`[DRY RUN]   └─ ${item.detail.split('\n')[0]}`);
+          }
+          results.push({
+            channelId, type, title, threadTs: null,
+            items: items.map(i => ({ detail: i.detail, replySuccess: false, meta: i.meta })),
+          });
+          continue;
+        }
+
+        const threadTs = await postSlackMessage(channelId, title, token);
+        const resultItems: FlushResult['items'] = [];
+
+        if (threadTs) {
+          for (const item of items) {
+            await sleep(300);
+            const replyTs = await postSlackMessage(channelId, item.detail, token, threadTs);
+            resultItems.push({ detail: item.detail, replySuccess: replyTs !== null, meta: item.meta });
+          }
+        } else {
+          for (const item of items) {
+            resultItems.push({ detail: item.detail, replySuccess: false, meta: item.meta });
+          }
+        }
+
+        results.push({ channelId, type, title, threadTs, items: resultItems });
+      }
+    }
+
+    this.buckets.clear();
+    return results;
+  }
+}
+
 async function postSlackMessage(channel: string, text: string, token: string, threadTs?: string): Promise<string | null> {
   const payload: Record<string, string> = { channel, text, username: 'Campaign Control', icon_emoji: ':control_knobs:' };
   if (threadTs) payload.thread_ts = threadTs;

@@ -4,12 +4,12 @@ import { InstantlyDirectApi } from './instantly-direct';
 import { evaluateStep, evaluateVariant, checkVariantWarnings } from './evaluator';
 import { resolveChannel, resolveCmName, isPilotCampaign, isPilotWorkspace } from './router';
 import {
-  sendKillNotification, sendLastVariantNotification, sendWarningNotification,
-  sendRescanNotification, sendLeadsWarningNotification, sendLeadsExhaustedNotification,
-  formatKillTitle, formatKillDetails, formatLastVariantTitle, formatLastVariantDetails,
-  formatWarningTitle, formatWarningDetails, formatRescanTitle, formatRescanDetails,
-  formatLeadsWarningTitle, formatLeadsWarningDetails, formatLeadsExhaustedTitle, formatLeadsExhaustedDetails,
+  NotificationCollector,
+  formatKillDetails, formatLastVariantDetails,
+  formatWarningDetails, formatRescanDetails,
+  formatLeadsWarningDetails, formatLeadsExhaustedDetails,
 } from './slack';
+import type { NotificationMeta } from './slack';
 import {
   getSupabaseClient, writeAuditLogToSupabase, writeLeadsAuditToSupabase,
   writeRunSummaryToSupabase, writeDailySnapshotToSupabase, writeNotificationToSupabase,
@@ -390,6 +390,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
     let totalVariantsBlocked = 0;
     let totalVariantsWarned = 0;
     let totalVariantsDeferred = 0;
+    let killBudgetRemaining = MAX_KILLS_PER_RUN > 0 ? MAX_KILLS_PER_RUN : Infinity;
     let totalErrors = 0;
     let totalRescanChecked = 0;
     let totalRescanReEnabled = 0;
@@ -404,6 +405,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
+
+    // Notification collector — groups Slack messages by (channel, type)
+    const collector = new NotificationCollector();
 
     // Snapshot accumulator (zero extra API calls -- data collected during Phase 1)
     const snapshotAcc = {
@@ -508,8 +512,11 @@ async function executeScheduledRun(env: Env): Promise<void> {
               // a. Get campaign details first (need sequences for kill writes)
               const campaignDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
 
-              // b. Get step analytics (unfiltered — validated as accurate)
-              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
+              // b. Get step analytics (date-filtered for accuracy)
+              const createdDate = (campaignDetail as Record<string, unknown>).timestamp_created as string | undefined;
+              const startDate = createdDate ? createdDate.split('T')[0] : undefined;
+              const endDate = new Date().toISOString().split('T')[0];
+              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id, startDate, endDate);
 
               // c. Sequences guard
               if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) {
@@ -618,7 +625,21 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 );
               }
 
-              // e. Quick gate: skip kill evaluation if no variant has reached the threshold
+              // e. Sanity check: Step 1 total sent should not exceed campaign contacted count.
+              // The Instantly API sometimes returns inflated step analytics.
+              const step1Analytics = allAnalytics.filter(a => parseInt(a.step, 10) === 0);
+              const step1TotalSent = step1Analytics.reduce((sum, a) => sum + a.sent, 0);
+              const campaignAnalytics = await instantly.getCampaignAnalytics(workspace.id, campaign.id);
+              const contactedCount = campaignAnalytics.contacted;
+
+              if (contactedCount > 0 && step1TotalSent > contactedCount * 1.1) {
+                console.warn(
+                  `[auto-turnoff] DATA INTEGRITY SKIP: "${campaign.name}" Step 1 sent (${step1TotalSent}) exceeds contacted (${contactedCount}) by ${Math.round((step1TotalSent / contactedCount - 1) * 100)}%. Skipping kill evaluation — data unreliable.`,
+                );
+                return;
+              }
+
+              // f. Quick gate: skip kill evaluation if no variant has reached the threshold
               const anyAboveThreshold = allAnalytics.some((a) => a.sent >= threshold);
               if (!anyAboveThreshold) {
                 return;
@@ -655,6 +676,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   threshold,
                 );
 
+                // Build set of all kill indices for accurate surviving count
+                const allKillIndices = new Set(kills.map(k => k.variantIndex));
+
                 // Process confirmed kills
                 for (const kill of kills) {
                   // Defensive check — skip if variant is already disabled in campaign detail
@@ -675,7 +699,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     opportunities === 0 ? 'Infinity' : (sent / opportunities).toFixed(1);
 
                   const survivingVariantCount = stepDetail.variants.filter(
-                    (v, i) => !v.v_disabled && i !== kill.variantIndex,
+                    (v, i) => !v.v_disabled && !allKillIndices.has(i),
                   ).length;
 
                   const killAction: KillAction = {
@@ -716,7 +740,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   };
 
                   // Kill cap check: defer if we've hit the per-run limit
-                  const killCapReached = MAX_KILLS_PER_RUN > 0 && (totalVariantsKilled + pendingKills.length) >= MAX_KILLS_PER_RUN;
+                  const killCapReached = killBudgetRemaining <= 0;
 
                   if (killCapReached && !isDryRun) {
                     totalVariantsDeferred++;
@@ -780,6 +804,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                         stepIndex,
                         channelId,
                       });
+                      killBudgetRemaining--;
                     } else {
                       console.log(
                         `[auto-turnoff] Kill dedup: already notified for ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — skipping`,
@@ -859,20 +884,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                         `[${isDryRun ? 'DRY RUN' : 'KILLS PAUSED'}] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${threshold} — NOT killed, last active variant`,
                       );
                     } else {
-                      const blockedSlackResult = await sendLastVariantNotification(blockedAction, channelId, env).catch((slackErr) => {
-                        console.error(
-                          `[auto-turnoff] Slack notification failed for blocked variant ${campaign.name} step=${stepIndex} variant=${blocked.variantIndex}: ${slackErr}`,
-                        );
-                        return { threadTs: null, replySuccess: false };
-                      });
-                      if (sb) await writeNotificationToSupabase(sb, {
+                      collector.add(channelId, 'LAST_VARIANT', formatLastVariantDetails(blockedAction), {
                         timestamp: new Date().toISOString(),
                         notification_type: 'LAST_VARIANT',
-                        channel_id: channelId,
-                        title: formatLastVariantTitle(blockedAction),
-                        details: formatLastVariantDetails(blockedAction),
-                        thread_ts: blockedSlackResult.threadTs,
-                        reply_success: blockedSlackResult.replySuccess,
                         campaign_id: campaign.id,
                         campaign_name: campaign.name,
                         workspace_id: workspace.id,
@@ -882,7 +896,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                         variant: blocked.variantIndex,
                         variant_label: VARIANT_LABELS[blocked.variantIndex] ?? String(blocked.variantIndex),
                         dry_run: isDryRun,
-                      }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+                      });
                     }
 
                     // Write dedup key (7-day TTL, cleared if variant is no longer last active)
@@ -951,21 +965,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                         `[DRY RUN] WARNING: ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${warning.variantIndex} — ${warning.pctConsumed}% consumed → channel=${channelId || 'FALLBACK'} cm=${cmName ?? 'unknown'}`,
                       );
                     } else {
-                      const warningSlackResult = await sendWarningNotification(warning, campaign.name, workspace.name, stepIndex, channelId, env).catch((slackErr) => {
-                        console.error(
-                          `[auto-turnoff] Slack warning notification failed for ${campaign.name} step=${stepIndex} variant=${warning.variantIndex}: ${slackErr}`,
-                        );
-                        return { threadTs: null, replySuccess: false };
-                      });
-                      await env.KV.put(dedupKey, '1', { expirationTtl: WARNING_DEDUP_TTL_SECONDS });
-                      if (sb) await writeNotificationToSupabase(sb, {
+                      collector.add(channelId, 'WARNING', formatWarningDetails(warning, campaign.name, workspace.name, stepIndex), {
                         timestamp: new Date().toISOString(),
                         notification_type: 'WARNING',
-                        channel_id: channelId,
-                        title: formatWarningTitle(warning, stepIndex),
-                        details: formatWarningDetails(warning, campaign.name, workspace.name, stepIndex),
-                        thread_ts: warningSlackResult.threadTs,
-                        reply_success: warningSlackResult.replySuccess,
                         campaign_id: campaign.id,
                         campaign_name: campaign.name,
                         workspace_id: workspace.id,
@@ -975,7 +977,8 @@ async function executeScheduledRun(env: Env): Promise<void> {
                         variant: warning.variantIndex,
                         variant_label: warning.variantLabel,
                         dry_run: isDryRun,
-                      }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+                      });
+                      await env.KV.put(dedupKey, '1', { expirationTtl: WARNING_DEDUP_TTL_SECONDS });
                     }
                   }
                 }
@@ -1068,20 +1071,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                           console.error(`[auto-turnoff] Failed to write rescan entry: ${err}`),
                         );
 
-                        const killSlackResult = await sendKillNotification(pk.kill, pk.channelId, env).catch((slackErr) => {
-                          console.error(
-                            `[auto-turnoff] Slack notification failed for ${campaign.name} step=${pk.stepIndex} variant=${pk.kill.variantIndex}: ${slackErr}`,
-                          );
-                          return { threadTs: null, replySuccess: false };
-                        });
-                        if (sb) await writeNotificationToSupabase(sb, {
+                        collector.add(pk.channelId, 'KILL', formatKillDetails(pk.kill), {
                           timestamp: new Date().toISOString(),
                           notification_type: 'KILL',
-                          channel_id: pk.channelId,
-                          title: formatKillTitle(pk.kill),
-                          details: formatKillDetails(pk.kill),
-                          thread_ts: killSlackResult.threadTs,
-                          reply_success: killSlackResult.replySuccess,
                           campaign_id: campaign.id,
                           campaign_name: campaign.name,
                           workspace_id: workspace.id,
@@ -1091,7 +1083,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                           variant: pk.kill.variantIndex,
                           variant_label: VARIANT_LABELS[pk.kill.variantIndex] ?? String(pk.kill.variantIndex),
                           dry_run: isDryRun,
-                        }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+                        });
 
                         // Write dedup key (7-day TTL, cleared if variant is re-enabled by rescan)
                         const killDedupKey = `kill:${campaign.id}:${pk.stepIndex}:${pk.kill.variantIndex}`;
@@ -1111,6 +1103,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     console.error(`[auto-turnoff] Batch kill failed for ${campaign.name}: ${batchErr}`);
                     // No fallback to individual kills (same race condition).
                     // Variants remain enabled and will be re-evaluated next cron run.
+                    killBudgetRemaining += pendingKills.length;
                     workspaceErrors += pendingKills.length;
                     totalErrors += pendingKills.length;
                   }
@@ -1354,20 +1347,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   totalRescanReEnabled++;
 
                   const rescanChannelId = resolveChannel(entry.cmName, env.SLACK_FALLBACK_CHANNEL);
-                  const rescanSlackResult = await sendRescanNotification(entry, variantRow.opportunities, currentRatio, rescanChannelId, env).catch(
-                    (err) => {
-                      console.error(`[auto-turnoff] Rescan Slack notification failed: ${err}`);
-                      return { threadTs: null, replySuccess: false };
-                    },
-                  );
-                  if (sb) await writeNotificationToSupabase(sb, {
+                  collector.add(rescanChannelId, 'RESCAN_RE_ENABLED', formatRescanDetails(entry, variantRow.opportunities, currentRatio), {
                     timestamp: new Date().toISOString(),
                     notification_type: 'RESCAN_RE_ENABLED',
-                    channel_id: rescanChannelId,
-                    title: formatRescanTitle(entry),
-                    details: formatRescanDetails(entry, variantRow.opportunities, currentRatio),
-                    thread_ts: rescanSlackResult.threadTs,
-                    reply_success: rescanSlackResult.replySuccess,
                     campaign_id: entry.campaignId,
                     campaign_name: entry.campaignName,
                     workspace_id: entry.workspaceId,
@@ -1377,7 +1359,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     variant: entry.variantIndex,
                     variant_label: entry.variantLabel,
                     dry_run: isDryRun,
-                  }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+                  });
 
                   await env.KV.delete(key.name);
                   // Clear kill dedup so a future re-kill can notify
@@ -1577,25 +1559,10 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 console.error(`[supabase] leads_exhausted audit write failed: ${err}`),
               );
 
-              // Send Slack notification
-              const exhaustedSlackResult = await sendLeadsExhaustedNotification(
-                candidate,
-                totalLeads,
-                totalLeads - completed,
-                candidate.channelId,
-                env,
-              ).catch((err) => {
-                console.error(`[auto-turnoff] Leads exhausted Slack notification failed: ${err}`);
-                return { threadTs: null, replySuccess: false };
-              });
-              if (sb) await writeNotificationToSupabase(sb, {
+              // Collect Slack notification
+              collector.add(candidate.channelId, 'LEADS_EXHAUSTED', formatLeadsExhaustedDetails(candidate, totalLeads, totalLeads - completed), {
                 timestamp: new Date().toISOString(),
                 notification_type: 'LEADS_EXHAUSTED',
-                channel_id: candidate.channelId,
-                title: formatLeadsExhaustedTitle(),
-                details: formatLeadsExhaustedDetails(candidate, totalLeads, totalLeads - completed),
-                thread_ts: exhaustedSlackResult.threadTs,
-                reply_success: exhaustedSlackResult.replySuccess,
                 campaign_id: candidate.campaignId,
                 campaign_name: candidate.campaignName,
                 workspace_id: candidate.workspaceId,
@@ -1605,7 +1572,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 variant: null,
                 variant_label: null,
                 dry_run: isDryRun,
-              }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+              });
 
               // Clear any existing warning dedup (escalated to exhausted)
               await env.KV.delete(`leads-warning:${candidate.campaignId}`).catch(() => {});
@@ -1671,25 +1638,10 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 console.error(`[supabase] leads_warning audit write failed: ${err}`),
               );
 
-              // Send Slack notification
-              const warningLeadsSlackResult = await sendLeadsWarningNotification(
-                candidate,
-                uncontacted,
-                totalLeads,
-                candidate.channelId,
-                env,
-              ).catch((err) => {
-                console.error(`[auto-turnoff] Leads warning Slack notification failed: ${err}`);
-                return { threadTs: null, replySuccess: false };
-              });
-              if (sb) await writeNotificationToSupabase(sb, {
+              // Collect Slack notification
+              collector.add(candidate.channelId, 'LEADS_WARNING', formatLeadsWarningDetails(candidate, uncontacted, totalLeads), {
                 timestamp: new Date().toISOString(),
                 notification_type: 'LEADS_WARNING',
-                channel_id: candidate.channelId,
-                title: formatLeadsWarningTitle(),
-                details: formatLeadsWarningDetails(candidate, uncontacted, totalLeads),
-                thread_ts: warningLeadsSlackResult.threadTs,
-                reply_success: warningLeadsSlackResult.replySuccess,
                 campaign_id: candidate.campaignId,
                 campaign_name: candidate.campaignName,
                 workspace_id: candidate.workspaceId,
@@ -1699,7 +1651,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 variant: null,
                 variant_label: null,
                 dry_run: isDryRun,
-              }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+              });
 
             } else {
               // HEALTHY: clear any existing dedup keys (state recovered)
@@ -1901,6 +1853,34 @@ async function executeScheduledRun(env: Env): Promise<void> {
         console.warn(`[auto-turnoff] Phase 4 complete: ${ghostCount} ghost re-enables detected`);
       } else {
         console.log(`[auto-turnoff] Phase 4 complete: all ${persistenceChecks} kills verified persistent`);
+      }
+
+      // 5b. FLUSH GROUPED NOTIFICATIONS TO SLACK
+      console.log(JSON.stringify({ event: 'phase_start', phase: 'notifications', pending: collector.size, elapsedMs: Date.now() - runStart }));
+      try {
+        const flushResults = await collector.flush(env.SLACK_BOT_TOKEN, isDryRun);
+        let totalNotificationsSent = 0;
+        for (const group of flushResults) {
+          totalNotificationsSent += group.items.length;
+          console.log(`[auto-turnoff] Notifications: ${group.type} → ${group.items.length} items → channel=${group.channelId} thread=${group.threadTs ?? 'none'}`);
+
+          // Write individual Supabase notification records with group thread_ts
+          if (sb) {
+            for (const item of group.items) {
+              await writeNotificationToSupabase(sb, {
+                ...item.meta,
+                channel_id: group.channelId,
+                title: group.title,
+                details: item.detail,
+                thread_ts: group.threadTs,
+                reply_success: item.replySuccess,
+              }).catch((err) => console.error(`[supabase] notification write failed: ${err}`));
+            }
+          }
+        }
+        console.log(`[auto-turnoff] Notifications complete: ${totalNotificationsSent} items across ${flushResults.length} groups`);
+      } catch (notifyErr) {
+        console.error(`[auto-turnoff] Notification flush error: ${notifyErr}`);
       }
 
       // 6. WRITE DAILY SNAPSHOT

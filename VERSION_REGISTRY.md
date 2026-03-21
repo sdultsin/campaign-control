@@ -36,4 +36,5 @@ Agents: when you see a `worker_version` value in Supabase, look it up here to un
 
 | Version | Deployed (UTC) | Specs Included | Known Data Issues |
 |---------|---------------|----------------|-------------------|
-| `7b95a92` | 2026-03-20 ~20:XX UTC | cc-version-tagging, skip-disabled-variants, leads-direct-api | First automated version tag. KILLS_ENABLED=false. |
+| `7b95a92` | 2026-03-20 ~20:00 UTC | cc-version-tagging, skip-disabled-variants, leads-direct-api | First automated version tag. KILLS_ENABLED=false. **leads_checked always 0** -- getBatchCampaignAnalytics reads `c.id` but API returns `campaign_id`, so leads phase silently skips all campaigns. Variant evaluation data is accurate. |
+| `87d06fa` | 2026-03-20 ~16:30 UTC | Fix campaign_id field mapping in leads batch analytics | Fixes leads phase: `c.id` -> `(c.campaign_id ?? c.id)`. First version with working leads monitoring in direct API mode. KILLS_ENABLED=false. |

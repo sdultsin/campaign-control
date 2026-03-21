@@ -112,16 +112,19 @@ export class InstantlyDirectApi {
     return this.get<CampaignDetail>(`/campaigns/${campaignId}`, key);
   }
 
-  async getStepAnalytics(workspaceId: string, campaignId: string): Promise<StepAnalytics[]> {
+  async getStepAnalytics(workspaceId: string, campaignId: string, startDate?: string, endDate?: string): Promise<StepAnalytics[]> {
     const key = this.getKey(workspaceId);
     // Returns bare array directly
+    const params: Record<string, string> = {
+      campaign_id: campaignId,
+      include_opportunities_count: 'true',
+    };
+    if (startDate) params.start_date = startDate;
+    if (endDate) params.end_date = endDate;
     const raw = await this.get<unknown>(
       '/campaigns/analytics/steps',
       key,
-      {
-        campaign_id: campaignId,
-        include_opportunities_count: 'true',
-      },
+      params,
     );
     return this.extractArray<StepAnalytics>(raw);
   }

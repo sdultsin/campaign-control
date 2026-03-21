@@ -22,12 +22,17 @@ export class InstantlyApi {
   async getStepAnalytics(
     workspaceId: string,
     campaignId: string,
+    startDate?: string,
+    endDate?: string,
   ): Promise<StepAnalytics[]> {
-    const raw = await this.mcp.callTool<unknown>('get_step_analytics', {
+    const params: Record<string, unknown> = {
       workspace_id: workspaceId,
       campaign_id: campaignId,
       include_opportunities: true,
-    });
+    };
+    if (startDate) params.start_date = startDate;
+    if (endDate) params.end_date = endDate;
+    const raw = await this.mcp.callTool<unknown>('get_step_analytics', params);
     return this.extractArray<StepAnalytics>(raw, 'get_step_analytics');
   }
 
