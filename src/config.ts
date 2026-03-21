@@ -32,6 +32,9 @@ export const PRODUCT_THRESHOLDS: Record<Product, number> = {
   S125: 14000,
 };
 
+/** 20% buffer applied to OFF-campaign thresholds. OFF campaigns get more runway before kill. */
+export const OFF_CAMPAIGN_BUFFER = 1.2;
+
 export interface WorkspaceConfig {
   id: string;
   name: string;

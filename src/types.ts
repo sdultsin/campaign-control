@@ -161,6 +161,7 @@ export interface KillAction {
   threshold: number;
   notification: NotificationType;
   survivingVariantCount: number;
+  isOff: boolean;
 }
 
 // Environment bindings
@@ -186,6 +187,7 @@ export interface LastVariantWarning {
   remaining: number;
   pctConsumed: number;
   opportunities: number;
+  isOff: boolean;
 }
 
 export interface RescanEntry {

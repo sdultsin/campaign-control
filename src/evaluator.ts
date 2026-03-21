@@ -112,6 +112,7 @@ export function checkVariantWarnings(
   stepIndex: number,
   threshold: number,
   killedIndices: number[],
+  isOff: boolean = false,
 ): LastVariantWarning[] {
   const killedSet = new Set(killedIndices);
   const warnings: LastVariantWarning[] = [];
@@ -145,6 +146,7 @@ export function checkVariantWarnings(
       remaining: Math.max(0, threshold - sent),
       pctConsumed: Math.round(pctConsumed * 10) / 10,
       opportunities,
+      isOff,
     });
   }
 

@@ -1,4 +1,4 @@
-import { PROVIDER_THRESHOLDS, DEFAULT_THRESHOLD, PRODUCT_THRESHOLDS, getWorkspaceConfig } from './config';
+import { PROVIDER_THRESHOLDS, DEFAULT_THRESHOLD, PRODUCT_THRESHOLDS, OFF_CAMPAIGN_BUFFER, getWorkspaceConfig } from './config';
 import type { CampaignDetail } from './types';
 
 /** Minimal API interface used by threshold resolution (works with both MCP and direct clients) */
@@ -16,15 +16,23 @@ export async function resolveThreshold(
   campaign: CampaignDetail,
   api: ThresholdApi,
   kv: KVNamespace,
+  isOff: boolean = false,
 ): Promise<number | null> {
   const config = getWorkspaceConfig(workspaceId);
   if (!config) return null;
 
+  let threshold: number;
   if (config.product === 'FUNDING') {
-    return getInfraThreshold(workspaceId, campaign, api, kv);
+    threshold = await getInfraThreshold(workspaceId, campaign, api, kv);
+  } else {
+    threshold = PRODUCT_THRESHOLDS[config.product];
   }
 
-  return PRODUCT_THRESHOLDS[config.product];
+  if (isOff) {
+    threshold = Math.round(threshold * OFF_CAMPAIGN_BUFFER);
+  }
+
+  return threshold;
 }
 
 /**

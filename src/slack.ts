@@ -1,5 +1,5 @@
 import type { KillAction, Env, LastVariantWarning, RescanEntry, LeadsCheckCandidate } from './types';
-import { VARIANT_LABELS } from './config';
+import { VARIANT_LABELS, OFF_CAMPAIGN_BUFFER } from './config';
 
 // ---------------------------------------------------------------------------
 // Notification types & grouped titles
@@ -144,6 +144,11 @@ async function postSlackMessage(channel: string, text: string, token: string, th
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+function formatOffAnnotation(threshold: number): string {
+  const base = Math.round(threshold / OFF_CAMPAIGN_BUFFER);
+  return `\n\nℹ️ OFF campaign — threshold raised 20% (${base.toLocaleString()} → ${threshold.toLocaleString()})`;
+}
+
 export async function postThreadedMessage(
   channel: string,
   title: string,
@@ -197,6 +202,10 @@ ${ratioLine}`;
     message += `\n\n:warning: Step ${stepIndex + 1} now has only ${survivingVariantCount} active variant.\nAdd new variants to restore diversity and reduce deliverability risk.`;
   }
 
+  if (action.isOff) {
+    message += formatOffAnnotation(threshold);
+  }
+
   return message;
 }
 
@@ -224,7 +233,7 @@ export function formatLastVariantDetails(action: KillAction): string {
       ? `0 opportunities past ${sent} sends`
       : `Ratio: ${sent}:${opportunities} = ${ratio} (threshold: ${thresholdFormatted}:1)`;
 
-  return `Workspace: ${workspaceName}
+  let message = `Workspace: ${workspaceName}
 Campaign: ${campaignName}
 Step ${stepIndex + 1}, Variant ${label}
 
@@ -236,6 +245,12 @@ ${ratioLine}
 But it's the LAST active variant in Step ${stepIndex + 1}. The system did NOT disable it.
 
 Action needed: Add 1+ new variants to this step, then manually turn off Variant ${label}.`;
+
+  if (action.isOff) {
+    message += formatOffAnnotation(threshold);
+  }
+
+  return message;
 }
 
 export async function sendKillNotification(action: KillAction, channelId: string, env: Env): Promise<{ threadTs: string | null; replySuccess: boolean }> {
@@ -271,7 +286,7 @@ export function formatWarningDetails(
   workspaceName: string,
   stepIndex: number,
 ): string {
-  return `Workspace: ${workspaceName}
+  let message = `Workspace: ${workspaceName}
 Campaign: ${campaignName}
 Step ${stepIndex + 1}, Variant ${warning.variantLabel}
 
@@ -279,6 +294,12 @@ Emails sent: ${warning.sent.toLocaleString()} / ${warning.threshold.toLocaleStri
 Opportunities: ${warning.opportunities}
 
 This variant will be auto-disabled when it hits ${warning.threshold.toLocaleString()} sends with insufficient opportunities.`;
+
+  if (warning.isOff) {
+    message += formatOffAnnotation(warning.threshold);
+  }
+
+  return message;
 }
 
 export async function sendWarningNotification(

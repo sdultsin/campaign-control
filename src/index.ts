@@ -168,7 +168,7 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
       if (!wsConfig) continue;
 
       const campaigns = await instantly.getCampaigns(workspace.id);
-      const activeCampaigns = campaigns.filter((c) => !isOffCampaign(c.name));
+      const activeCampaigns = campaigns;
 
       if (!acc.byWorkspace[workspace.id]) {
         acc.byWorkspace[workspace.id] = {
@@ -185,7 +185,7 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
 
           const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
 
-          const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV);
+          const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV, isOffCampaign(campaign.name));
           if (threshold === null) continue;
 
           const cmName = resolveCmName(wsConfig, campaign.name);
@@ -482,13 +482,12 @@ async function executeScheduledRun(env: Env): Promise<void> {
         try {
           const allCampaigns = await instantly.getCampaigns(workspace.id);
 
-          // OFF campaign filter pass
-          const activeCampaigns = allCampaigns.filter((c) => !isOffCampaign(c.name));
-          const skippedOff = allCampaigns.length - activeCampaigns.length;
+          const activeCampaigns = allCampaigns;
+          const offCount = allCampaigns.filter((c) => isOffCampaign(c.name)).length;
 
           console.log(
-            `[auto-turnoff] ${activeCampaigns.length} active campaigns` +
-              (skippedOff > 0 ? ` (${skippedOff} skipped OFF)` : '') +
+            `[auto-turnoff] ${activeCampaigns.length} campaigns` +
+              (offCount > 0 ? ` (${offCount} OFF, buffered)` : '') +
               ` in ${workspace.name}`,
           );
 
@@ -497,9 +496,6 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
           // Process campaigns with concurrency cap
           await processWithConcurrency(activeCampaigns, concurrencyCap, async (campaign) => {
-            // Double-check OFF filter inside concurrency worker (defensive)
-            if (isOffCampaign(campaign.name)) return;
-
             // Resolve CM early — needed for pilot filter before expensive API calls
             const cmName = resolveCmName(wsConfig, campaign.name);
 
@@ -525,7 +521,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
               }
 
               // d. Resolve threshold (needs campaign details for email_tag_list)
-              const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV);
+              const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV, isOffCampaign(campaign.name));
               if (threshold === null) {
                 console.warn(
                   `[auto-turnoff] Could not resolve threshold for campaign "${campaign.name}" — skipping`,
@@ -715,6 +711,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     threshold,
                     notification: kill.notification,
                     survivingVariantCount,
+                    isOff: isOffCampaign(campaign.name),
                   };
 
                   const triggerRule =
@@ -837,6 +834,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     threshold,
                     notification: 'LAST_VARIANT',
                     survivingVariantCount: 0,
+                    isOff: isOffCampaign(campaign.name),
                   };
 
                   totalVariantsBlocked++;
@@ -919,7 +917,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
                 // Early warning check — for ALL active variants approaching threshold
                 const killedIndices = kills.map((k) => k.variantIndex);
-                const warnings = checkVariantWarnings(stepDetail, stepAnalytics, stepIndex, threshold, killedIndices);
+                const warnings = checkVariantWarnings(stepDetail, stepAnalytics, stepIndex, threshold, killedIndices, isOffCampaign(campaign.name));
 
                 for (const warning of warnings) {
                   const dedupKey = `warning:${campaign.id}:${stepIndex}:${warning.variantIndex}`;
