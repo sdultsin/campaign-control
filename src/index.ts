@@ -1502,27 +1502,72 @@ async function executeScheduledRun(env: Env): Promise<void> {
           console.log(`[auto-turnoff] Leads check: evaluating ${leadsCheckCandidates.length} campaigns`);
         }
 
+        // Batch fetch analytics for all workspaces with candidates (1 API call per workspace).
+        // In direct mode, this replaces per-campaign MCP count_leads calls (MCP SSE fails from CF edge).
+        const leadsBatchByWorkspace = new Map<string, Map<string, {
+          leads_count: number; contacted: number; completed_count: number;
+          bounced_count: number; unsubscribed_count: number;
+        }>>();
+
+        if (useDirectApi && leadsCheckCandidates.length > 0) {
+          const directApi = instantly as InstantlyDirectApi;
+          const workspaceIds = [...new Set(leadsCheckCandidates.map((c) => c.workspaceId))];
+          for (const wsId of workspaceIds) {
+            try {
+              const batchMap = await directApi.getBatchCampaignAnalytics(wsId);
+              leadsBatchByWorkspace.set(wsId, batchMap);
+            } catch (batchErr) {
+              console.error(`[auto-turnoff] Batch analytics fetch failed for workspace ${wsId}: ${batchErr}`);
+            }
+          }
+        }
+
         for (const candidate of leadsCheckCandidates) {
           try {
-            // Use MCP count_leads for accurate per-campaign status.
-            // The analytics contacted_count is a lifetime accumulator that
-            // inflates when CMs cycle leads, causing false EXHAUSTED verdicts.
-            const leadCounts = await mcpApi.countLeads(
-              candidate.workspaceId,
-              candidate.campaignId,
-            );
-            const totalLeads = leadCounts.total_leads;
-            const s = leadCounts.status;
-            const completed = s.completed;
-            const bounced = s.bounced;
-            const unsubscribed = s.unsubscribed;
-            const skipped = s.skipped;
-            const active = s.active;
+            let totalLeads: number;
+            let completed: number;
+            let bounced: number;
+            let unsubscribed: number;
+            let skipped: number;
+            let active: number;
+            let contacted: number;
+            let uncontacted: number;
 
-            // active = leads that haven't completed the sequence = true uncontacted
-            const uncontacted = active;
-            // contacted = all leads that have reached a terminal or in-progress state
-            const contacted = completed + bounced + skipped + unsubscribed;
+            if (useDirectApi) {
+              // Direct mode: derive from batch analytics (no MCP dependency).
+              // active ≈ leads_count - completed - bounced - unsubscribed (skipped unavailable, typically <0.1%).
+              // If analytics status fields are lifetime accumulators, active is understated → more false
+              // warnings (safe direction). Clamped to 0 to prevent negative values from lead cycling.
+              const wsMap = leadsBatchByWorkspace.get(candidate.workspaceId);
+              const data = wsMap?.get(candidate.campaignId);
+              if (!data) {
+                console.warn(`[auto-turnoff] No batch analytics for campaign ${candidate.campaignId} — skipping leads check`);
+                continue;
+              }
+              totalLeads = data.leads_count;
+              completed = data.completed_count;
+              bounced = data.bounced_count;
+              unsubscribed = data.unsubscribed_count;
+              skipped = 0; // Not available from analytics endpoint
+              active = Math.max(0, totalLeads - completed - bounced - unsubscribed);
+              contacted = completed + bounced + unsubscribed;
+              uncontacted = active;
+            } else {
+              // MCP fallback: per-campaign count_leads call (used when INSTANTLY_MODE=mcp)
+              const leadCounts = await mcpApi.countLeads(
+                candidate.workspaceId,
+                candidate.campaignId,
+              );
+              totalLeads = leadCounts.total_leads;
+              const s = leadCounts.status;
+              completed = s.completed;
+              bounced = s.bounced;
+              unsubscribed = s.unsubscribed;
+              skipped = s.skipped;
+              active = s.active;
+              contacted = completed + bounced + skipped + unsubscribed;
+              uncontacted = active;
+            }
 
             // Evaluate
             const result = evaluateLeadDepletion(uncontacted, candidate.dailyLimit, totalLeads);
@@ -1784,14 +1829,14 @@ async function executeScheduledRun(env: Env): Promise<void> {
           } catch (err) {
             leadsCheckErrors++;
             console.warn(
-              `[auto-turnoff] Leads check skipped (MCP unreachable) for "${candidate.campaignName}": ${err}`,
+              `[auto-turnoff] Leads check failed for "${candidate.campaignName}": ${err}`,
             );
           }
         }
 
         if (leadsCheckErrors > 0) {
           console.warn(
-            `[auto-turnoff] Leads check: ${leadsCheckErrors}/${leadsCheckCandidates.length} campaigns skipped due to MCP errors`,
+            `[auto-turnoff] Leads check: ${leadsCheckErrors}/${leadsCheckCandidates.length} campaigns failed`,
           );
         }
 
