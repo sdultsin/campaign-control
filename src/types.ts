@@ -224,6 +224,7 @@ export interface AuditEntry {
     opportunities: number;
     ratio: string;
     threshold: number;
+    effective_threshold?: number;
     rule: string;
   };
   safety: {

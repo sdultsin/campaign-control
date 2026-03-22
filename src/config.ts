@@ -35,6 +35,14 @@ export const PRODUCT_THRESHOLDS: Record<Product, number> = {
 /** 20% buffer applied to OFF-campaign thresholds. OFF campaigns get more runway before kill. */
 export const OFF_CAMPAIGN_BUFFER = 1.2;
 
+/**
+ * Runway extension for variants that have opportunities but exceed the base threshold.
+ * Applied as a multiplier: effective_threshold = threshold * OPP_RUNWAY_MULTIPLIER.
+ * Only applies when opportunities > 0. Zero-opp variants use the base threshold.
+ * Stacks with OFF_CAMPAIGN_BUFFER (applied earlier in resolveThreshold).
+ */
+export const OPP_RUNWAY_MULTIPLIER = 1.1;
+
 export interface WorkspaceConfig {
   id: string;
   name: string;

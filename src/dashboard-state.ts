@@ -68,6 +68,7 @@ export async function buildDashboardState(
         opportunities: entry.trigger.opportunities,
         ratio: entry.trigger.ratio,
         threshold: entry.trigger.threshold,
+        effective_threshold: entry.trigger.effective_threshold ?? entry.trigger.threshold,
         rule: entry.trigger.rule,
         surviving_variants: entry.safety.survivingVariants,
       },

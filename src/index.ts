@@ -31,6 +31,7 @@ import {
   LEADS_EXHAUSTED_DEDUP_TTL_SECONDS,
   CM_MONITOR_CHANNELS,
   DASHBOARD_BASE_URL,
+  OPP_RUNWAY_MULTIPLIER,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -773,10 +774,13 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     isOff: isOffCampaign(campaign.name),
                   };
 
+                  const effectiveThreshold = opportunities > 0
+                    ? Math.round(threshold * OPP_RUNWAY_MULTIPLIER)
+                    : threshold;
                   const triggerRule =
                     opportunities === 0
                       ? `${sent} sent, 0 opportunities past ${threshold} sends`
-                      : `Ratio ${ratioValue}:1 exceeds threshold ${threshold}:1`;
+                      : `Ratio ${ratioValue}:1 exceeds threshold ${effectiveThreshold}:1`;
 
                   const auditEntry: AuditEntry = {
                     timestamp: new Date().toISOString(),
@@ -790,7 +794,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     variantLabel: VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex),
                     cm: cmName,
                     product: wsConfig.product,
-                    trigger: { sent, opportunities, ratio: ratioValue, threshold, rule: triggerRule },
+                    trigger: { sent, opportunities, ratio: ratioValue, threshold, effective_threshold: effectiveThreshold, rule: triggerRule },
                     safety: { survivingVariants: survivingVariantCount, notification: kill.notification },
                     dryRun: isDryRun,
                   };
@@ -898,10 +902,13 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
                   totalVariantsBlocked++;
 
+                  const effectiveThresholdBlocked = opportunities > 0
+                    ? Math.round(threshold * OPP_RUNWAY_MULTIPLIER)
+                    : threshold;
                   const blockedTriggerRule =
                     opportunities === 0
                       ? `${sent} sent, 0 opportunities past ${threshold} sends`
-                      : `Ratio ${ratioValue}:1 exceeds threshold ${threshold}:1`;
+                      : `Ratio ${ratioValue}:1 exceeds threshold ${effectiveThresholdBlocked}:1`;
 
                   // ALWAYS write audit entry for blocked variants (every run, not deduped)
                   const blockedAudit: AuditEntry = {
@@ -916,7 +923,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     variantLabel: VARIANT_LABELS[blocked.variantIndex] ?? String(blocked.variantIndex),
                     cm: cmName,
                     product: wsConfig.product,
-                    trigger: { sent, opportunities, ratio: ratioValue, threshold, rule: blockedTriggerRule },
+                    trigger: { sent, opportunities, ratio: ratioValue, threshold, effective_threshold: effectiveThresholdBlocked, rule: blockedTriggerRule },
                     safety: { survivingVariants: 0, notification: 'LAST_VARIANT' },
                     dryRun: isDryRun,
                   };

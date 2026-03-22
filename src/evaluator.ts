@@ -1,5 +1,5 @@
 import type { StepAnalytics, Step, Decision, SafetyResult, NotificationType, LastVariantWarning } from './types';
-import { LAST_VARIANT_WARNING_PCT, VARIANT_LABELS } from './config';
+import { LAST_VARIANT_WARNING_PCT, VARIANT_LABELS, OPP_RUNWAY_MULTIPLIER } from './config';
 
 // Evaluate a single variant against the threshold.
 // threshold doubles as both the minimum-sends gate and the sent/opportunities ratio ceiling.
@@ -11,13 +11,15 @@ export function evaluateVariant(sent: number, opportunities: number, threshold: 
     return { action: 'KILL_CANDIDATE', reason: `${sent} sent, 0 opportunities` };
   }
   const ratio = sent / opportunities;
-  if (ratio > threshold) {
+  // Variants with opps get extended runway -- one more opp could save them
+  const effectiveThreshold = threshold * OPP_RUNWAY_MULTIPLIER;
+  if (ratio > effectiveThreshold) {
     return {
       action: 'KILL_CANDIDATE',
-      reason: `Ratio ${ratio.toFixed(1)}:1 exceeds threshold`,
+      reason: `Ratio ${ratio.toFixed(1)}:1 exceeds extended threshold ${effectiveThreshold.toFixed(0)}:1`,
     };
   }
-  return { action: 'KEEP', reason: `Ratio ${ratio.toFixed(1)}:1 within threshold` };
+  return { action: 'KEEP', reason: `Ratio ${ratio.toFixed(1)}:1 within extended threshold ${effectiveThreshold.toFixed(0)}:1` };
 }
 
 // Safety check — can we kill the target indices without emptying the step?

@@ -210,6 +210,8 @@ export async function upsertDashboardItem(
         workspace_name: item.workspace_name,
         campaign_name: item.campaign_name,
         worker_version: WORKER_VERSION,
+        dismissed_at: null,
+        dismissed_by: null,
       })
       .eq('id', match.id);
     if (error) console.error(`[supabase] dashboard_items update failed: ${error.message}`);
@@ -275,6 +277,7 @@ export async function resolveStaleItems(
           resolved_at: now,
           resolution_scan_id: scanTimestamp,
           worker_version: WORKER_VERSION,
+          resolution_method: 'auto',
         });
       if (logErr) console.error(`[supabase] resolution_log insert failed: ${logErr.message}`);
 
