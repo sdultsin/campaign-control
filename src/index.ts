@@ -1487,6 +1487,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
       // PHASE 3: LEADS DEPLETION MONITOR
       console.log(JSON.stringify({ event: 'phase_start', phase: 'leads', elapsedMs: Date.now() - runStart, candidates: leadsCheckCandidates.length }));
+      let leadsCheckErrors = 0;
       try {
         if (leadsCheckCandidates.length === 0) {
           console.warn(`[auto-turnoff] Leads check: 0 candidates collected — campaigns may be missing daily_limit field. Evaluated ${totalCampaignsEvaluated} campaigns in Phase 1.`);
@@ -1774,11 +1775,17 @@ async function executeScheduledRun(env: Env): Promise<void> {
               }
             }
           } catch (err) {
-            totalErrors++;
-            console.error(
-              `[auto-turnoff] Leads check error for "${candidate.campaignName}": ${err}`,
+            leadsCheckErrors++;
+            console.warn(
+              `[auto-turnoff] Leads check skipped (MCP unreachable) for "${candidate.campaignName}": ${err}`,
             );
           }
+        }
+
+        if (leadsCheckErrors > 0) {
+          console.warn(
+            `[auto-turnoff] Leads check: ${leadsCheckErrors}/${leadsCheckCandidates.length} campaigns skipped due to MCP errors`,
+          );
         }
 
         if (totalLeadsChecked > 0) {
@@ -2010,7 +2017,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
       // 7. LOG RUN SUMMARY
       const durationMs = Date.now() - runStart;
       console.log(
-        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} warned=${totalVariantsWarned} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
+        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} warned=${totalVariantsWarned} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
       );
 
       // 8. WRITE RUN SUMMARY TO KV
@@ -2028,6 +2035,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
         rescanExpired: totalExpired,
         rescanCmOverride: totalCmOverride,
         leadsChecked: totalLeadsChecked,
+        leadsCheckErrors,
         leadsWarnings: totalLeadsWarnings,
         leadsExhausted: totalLeadsExhausted,
         leadsRecovered: totalLeadsRecovered,

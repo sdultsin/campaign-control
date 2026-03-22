@@ -89,6 +89,7 @@ export async function writeRunSummaryToSupabase(
     rescan_expired: summary.rescanExpired,
     rescan_cm_override: summary.rescanCmOverride,
     leads_checked: summary.leadsChecked,
+    leads_check_errors: summary.leadsCheckErrors,
     leads_warnings: summary.leadsWarnings,
     leads_exhausted: summary.leadsExhausted,
     leads_recovered: summary.leadsRecovered,

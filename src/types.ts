@@ -247,6 +247,7 @@ export interface RunSummary {
   rescanExpired: number;
   rescanCmOverride: number;
   leadsChecked: number;
+  leadsCheckErrors: number;
   leadsWarnings: number;
   leadsExhausted: number;
   leadsRecovered: number;
