@@ -37,7 +37,7 @@ import type {
   LeadsCheckCandidate, LeadsWarningEntry, LeadsExhaustedEntry, LeadsAuditEntry,
 } from './types';
 
-import { computeUncontacted, evaluateLeadDepletion } from './leads-monitor';
+import { evaluateLeadDepletion } from './leads-monitor';
 
 // ---------------------------------------------------------------------------
 // KV lock helpers
@@ -1430,62 +1430,27 @@ async function executeScheduledRun(env: Env): Promise<void> {
           console.log(`[auto-turnoff] Leads check: evaluating ${leadsCheckCandidates.length} campaigns`);
         }
 
-        // Batch fetch analytics for all workspaces represented in the candidate list
-        const workspaceIds = [...new Set(leadsCheckCandidates.map((c) => c.workspaceId))];
-        const batchByWorkspace = new Map<string, Map<string, {
-          leads_count: number; contacted: number; completed_count: number;
-          bounced_count: number; unsubscribed_count: number;
-        }>>();
-
-        if (useDirectApi && leadsCheckCandidates.length > 0) {
-          const directApi = instantly as InstantlyDirectApi;
-          for (const wsId of workspaceIds) {
-            try {
-              const batchMap = await directApi.getBatchCampaignAnalytics(wsId);
-              batchByWorkspace.set(wsId, batchMap);
-            } catch (batchErr) {
-              console.error(`[auto-turnoff] Batch analytics fetch failed for workspace ${wsId}: ${batchErr}`);
-              totalErrors++;
-            }
-          }
-        }
-
         for (const candidate of leadsCheckCandidates) {
           try {
-            let totalLeads: number;
-            let contacted: number;
-            let completed: number;
-            let bounced: number;
-            let unsubscribed: number;
+            // Use MCP count_leads for accurate per-campaign status.
+            // The analytics contacted_count is a lifetime accumulator that
+            // inflates when CMs cycle leads, causing false EXHAUSTED verdicts.
+            const leadCounts = await mcpApi.countLeads(
+              candidate.workspaceId,
+              candidate.campaignId,
+            );
+            const totalLeads = leadCounts.total_leads;
+            const s = leadCounts.status;
+            const completed = s.completed;
+            const bounced = s.bounced;
+            const unsubscribed = s.unsubscribed;
+            const skipped = s.skipped;
+            const active = s.active;
 
-            if (useDirectApi) {
-              const wsMap = batchByWorkspace.get(candidate.workspaceId);
-              const data = wsMap?.get(candidate.campaignId);
-              if (!data) {
-                console.warn(`[auto-turnoff] No batch analytics for campaign ${candidate.campaignId} — skipping`);
-                continue;
-              }
-              totalLeads = data.leads_count;
-              contacted = data.contacted;
-              completed = data.completed_count;
-              bounced = data.bounced_count;
-              unsubscribed = data.unsubscribed_count;
-            } else {
-              // MCP fallback path (non-direct mode)
-              const [leadCounts, campaignAnalytics] = await Promise.all([
-                mcpApi.countLeads(candidate.workspaceId, candidate.campaignId),
-                mcpApi.getCampaignAnalytics(candidate.workspaceId, candidate.campaignId),
-              ]);
-              totalLeads = leadCounts.total_leads;
-              const s = leadCounts.status;
-              contacted = campaignAnalytics.contacted;
-              completed = s.completed;
-              bounced = s.bounced;
-              unsubscribed = s.unsubscribed;
-            }
-
-            // Compute uncontacted (leads that have never received an email)
-            const uncontacted = computeUncontacted(totalLeads, contacted);
+            // active = leads that haven't completed the sequence = true uncontacted
+            const uncontacted = active;
+            // contacted = all leads that have reached a terminal or in-progress state
+            const contacted = completed + bounced + skipped + unsubscribed;
 
             // Evaluate
             const result = evaluateLeadDepletion(uncontacted, candidate.dailyLimit, totalLeads);
@@ -1535,11 +1500,11 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 leads: {
                   total: totalLeads,
                   contacted,
-                  uncontacted: 0,
+                  uncontacted,
                   completed,
-                  active: totalLeads - completed,
+                  active,
                   bounced,
-                  skipped: 0,
+                  skipped,
                   unsubscribed,
                   dailyLimit: candidate.dailyLimit,
                 },
@@ -1555,7 +1520,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
               );
 
               // Collect Slack notification
-              collector.add(candidate.channelId, 'LEADS_EXHAUSTED', formatLeadsExhaustedDetails(candidate, totalLeads, totalLeads - completed), {
+              collector.add(candidate.channelId, 'LEADS_EXHAUSTED', formatLeadsExhaustedDetails(candidate, totalLeads, active), {
                 timestamp: new Date().toISOString(),
                 notification_type: 'LEADS_EXHAUSTED',
                 campaign_id: candidate.campaignId,
@@ -1616,9 +1581,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   contacted,
                   uncontacted,
                   completed,
-                  active: totalLeads - completed,
+                  active,
                   bounced,
-                  skipped: 0,
+                  skipped,
                   unsubscribed,
                   dailyLimit: candidate.dailyLimit,
                 },
@@ -1677,9 +1642,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     contacted,
                     uncontacted,
                     completed,
-                    active: totalLeads - completed,
+                    active,
                     bounced,
-                    skipped: 0,
+                    skipped,
                     unsubscribed,
                     dailyLimit: candidate.dailyLimit,
                   },

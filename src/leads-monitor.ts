@@ -1,20 +1,6 @@
 import type { LeadsDepletionResult } from './types';
 
 /**
- * Calculate uncontacted leads.
- * contacted_count from the batch analytics API already includes leads that
- * subsequently bounced, completed, or unsubscribed -- so we only subtract
- * contacted from total. No need to subtract bounced/completed/unsubscribed
- * separately (that would double-subtract).
- */
-export function computeUncontacted(
-  totalLeads: number,
-  contacted: number,
-): number {
-  return Math.max(0, totalLeads - contacted);
-}
-
-/**
  * Evaluate a campaign's lead depletion status.
  *
  * Returns:

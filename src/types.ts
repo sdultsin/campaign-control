@@ -34,6 +34,7 @@ export interface LeadCounts {
     active: number;
     skipped: number;
     bounced: number;
+    unsubscribed: number;
   };
 }
 
@@ -82,10 +83,9 @@ export interface LeadsAuditEntry {
     contacted: number;
     uncontacted: number;
     completed: number;
-    /** Approximated as total - completed when using direct API (analytics endpoint does not return per-status lead counts) */
+    /** Active leads from count_leads endpoint — leads that haven't completed the sequence */
     active: number;
     bounced: number;
-    /** Not available from analytics endpoint; set to 0 when using direct API */
     skipped: number;
     unsubscribed: number;
     dailyLimit: number;
