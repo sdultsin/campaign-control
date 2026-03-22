@@ -8,11 +8,13 @@ import {
   formatKillDetails, formatLastVariantDetails,
   formatWarningDetails, formatRescanDetails,
   formatLeadsWarningDetails, formatLeadsExhaustedDetails,
+  sendMorningDigest,
 } from './slack';
 import type { NotificationMeta } from './slack';
 import {
   getSupabaseClient, writeAuditLogToSupabase, writeLeadsAuditToSupabase,
   writeRunSummaryToSupabase, writeDailySnapshotToSupabase, writeNotificationToSupabase,
+  getDashboardDigestData,
 } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -27,6 +29,8 @@ import {
   MAX_KILLS_PER_RUN,
   LEADS_WARNING_DEDUP_TTL_SECONDS,
   LEADS_EXHAUSTED_DEDUP_TTL_SECONDS,
+  CM_MONITOR_CHANNELS,
+  DASHBOARD_BASE_URL,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -38,6 +42,7 @@ import type {
 } from './types';
 
 import { evaluateLeadDepletion } from './leads-monitor';
+import { buildDashboardState } from './dashboard-state';
 
 // ---------------------------------------------------------------------------
 // KV lock helpers
@@ -302,8 +307,31 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
 // ---------------------------------------------------------------------------
 
 export default {
-  async scheduled(_event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
-    // Wrap entire run in ctx.waitUntil() so Cloudflare keeps the worker alive
+  async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Deploy-safety: skip catch-up runs triggered by deploys.
+    // If execution starts >5 min after the scheduled time, it's a stale trigger.
+    const delay = Date.now() - event.scheduledTime;
+    if (delay > 5 * 60 * 1000) {
+      console.log(JSON.stringify({
+        event: 'scheduled_skip',
+        reason: 'stale_trigger',
+        scheduledTime: new Date(event.scheduledTime).toISOString(),
+        actualTime: new Date().toISOString(),
+        delayMs: delay,
+      }));
+      return;
+    }
+
+    // 12:00 UTC = 8am EDT: morning digest only (no full eval)
+    const scheduledHour = new Date(event.scheduledTime).getUTCHours();
+    if (scheduledHour === 12) {
+      const digestPromise = executeMorningDigest(env);
+      ctx.waitUntil(digestPromise);
+      await digestPromise;
+      return;
+    }
+
+    // 10:00, 16:00, 22:00 UTC = 6am, 12pm, 6pm EDT: full evaluation run
     const runPromise = executeScheduledRun(env);
     ctx.waitUntil(runPromise);
     await runPromise;
@@ -346,6 +374,35 @@ export default {
     return new Response('Auto Turn-Off Worker. Use /__scheduled to trigger manually, /__baseline to capture a baseline.', { status: 200 });
   },
 };
+
+// ---------------------------------------------------------------------------
+// Morning digest (12:00 UTC / 8am EDT)
+// ---------------------------------------------------------------------------
+
+async function executeMorningDigest(env: Env): Promise<void> {
+  console.log(JSON.stringify({ event: 'digest_start', timestamp: new Date().toISOString() }));
+
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    console.error('[digest] SUPABASE_URL/SUPABASE_ANON_KEY not set, skipping digest');
+    return;
+  }
+
+  const sb = getSupabaseClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
+  const isDryRun = env.DRY_RUN === 'true';
+
+  for (const [cm, channel] of Object.entries(CM_MONITOR_CHANNELS)) {
+    try {
+      const summary = await getDashboardDigestData(sb, cm);
+      const dashboardUrl = `${DASHBOARD_BASE_URL}/cm/${cm.toLowerCase()}`;
+      await sendMorningDigest(channel, cm, dashboardUrl, summary, env.SLACK_BOT_TOKEN, isDryRun);
+      console.log(`[digest] Sent to ${cm}: ${summary.activeCount} active, ${summary.criticalCount} critical`);
+    } catch (err) {
+      console.error(`[digest] Failed for ${cm}: ${err}`);
+    }
+  }
+
+  console.log(JSON.stringify({ event: 'digest_complete', timestamp: new Date().toISOString() }));
+}
 
 // ---------------------------------------------------------------------------
 // Extracted scheduled run body
@@ -405,6 +462,11 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
+
+    // Dashboard state: collect BLOCKED and leads issues for Phase 5
+    const dashboardBlocked: AuditEntry[] = [];
+    const dashboardLeadsExhausted: LeadsAuditEntry[] = [];
+    const dashboardLeadsWarnings: LeadsAuditEntry[] = [];
 
     // Notification collector — groups Slack messages by (channel, type)
     const collector = new NotificationCollector();
@@ -865,6 +927,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   if (sb) await writeAuditLogToSupabase(sb, blockedAudit).catch((err) =>
                     console.error(`[supabase] blocked audit write failed: ${err}`),
                   );
+                  dashboardBlocked.push(blockedAudit);
 
                   // Dedup: only NOTIFY once per blocked variant (audit writes above are unconditional)
                   const blockedDedupKey = `blocked:${campaign.id}:${stepIndex}:${blocked.variantIndex}`;
@@ -1000,6 +1063,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     if (sb) await writeAuditLogToSupabase(sb, pausedAudit).catch((err) =>
                       console.error(`[supabase] kills-paused audit write failed: ${err}`),
                     );
+                    dashboardBlocked.push(pausedAudit);
                     totalVariantsBlocked++;
                     console.log(
                       `[auto-turnoff] KILLS PAUSED: would disable ${campaign.name} Step ${pk.stepIndex + 1} Variant ${pk.kill.variantIndex} — logged as BLOCKED, skipping Instantly API call`,
@@ -1461,6 +1525,29 @@ async function executeScheduledRun(env: Env): Promise<void> {
             }
 
             if (result.status === 'EXHAUSTED') {
+              // Dashboard state: collect BEFORE dedup check (dedup gates Slack, not dashboard)
+              dashboardLeadsExhausted.push({
+                timestamp: new Date().toISOString(),
+                action: 'LEADS_EXHAUSTED',
+                workspace: candidate.workspaceName,
+                workspaceId: candidate.workspaceId,
+                campaign: candidate.campaignName,
+                campaignId: candidate.campaignId,
+                cm: candidate.cmName,
+                leads: {
+                  total: totalLeads,
+                  contacted,
+                  uncontacted,
+                  completed,
+                  active,
+                  bounced,
+                  skipped,
+                  unsubscribed,
+                  dailyLimit: candidate.dailyLimit,
+                },
+                dryRun: isDryRun,
+              } as LeadsAuditEntry);
+
               // Check dedup: already alerted?
               const dedupKey = `leads-exhausted:${candidate.campaignId}`;
               const existing = await env.KV.get(dedupKey);
@@ -1538,6 +1625,29 @@ async function executeScheduledRun(env: Env): Promise<void> {
               await env.KV.delete(`leads-warning:${candidate.campaignId}`).catch(() => {});
 
             } else if (result.status === 'WARNING') {
+              // Dashboard state: collect BEFORE dedup check
+              dashboardLeadsWarnings.push({
+                timestamp: new Date().toISOString(),
+                action: 'LEADS_WARNING',
+                workspace: candidate.workspaceName,
+                workspaceId: candidate.workspaceId,
+                campaign: candidate.campaignName,
+                campaignId: candidate.campaignId,
+                cm: candidate.cmName,
+                leads: {
+                  total: totalLeads,
+                  contacted,
+                  uncontacted,
+                  completed,
+                  active,
+                  bounced,
+                  skipped,
+                  unsubscribed,
+                  dailyLimit: candidate.dailyLimit,
+                },
+                dryRun: isDryRun,
+              } as LeadsAuditEntry);
+
               // Check dedup: already alerted?
               const dedupKey = `leads-warning:${candidate.campaignId}`;
               const existing = await env.KV.get(dedupKey);
@@ -1815,10 +1925,27 @@ async function executeScheduledRun(env: Env): Promise<void> {
         console.log(`[auto-turnoff] Phase 4 complete: all ${persistenceChecks} kills verified persistent`);
       }
 
-      // 5b. FLUSH GROUPED NOTIFICATIONS TO SLACK
+      // PHASE 5: BUILD DASHBOARD STATE
+      console.log(JSON.stringify({ event: 'phase_start', phase: 'dashboard_state', elapsedMs: Date.now() - runStart }));
+      if (sb) {
+        try {
+          const dashResult = await buildDashboardState(
+            sb,
+            new Date().toISOString(),
+            dashboardBlocked,
+            dashboardLeadsExhausted,
+            dashboardLeadsWarnings,
+          );
+          console.log(`[auto-turnoff] Dashboard state: ${dashResult.upserted} upserted, ${dashResult.resolved} resolved`);
+        } catch (dashErr) {
+          console.error(`[auto-turnoff] Dashboard state error: ${dashErr}`);
+        }
+      }
+
+      // 5b. FLUSH NOTIFICATIONS (Slack suppressed — digest-only mode; data still written to Supabase)
       console.log(JSON.stringify({ event: 'phase_start', phase: 'notifications', pending: collector.size, elapsedMs: Date.now() - runStart }));
       try {
-        const flushResults = await collector.flush(env.SLACK_BOT_TOKEN, isDryRun);
+        const flushResults = await collector.flush(env.SLACK_BOT_TOKEN, isDryRun, /* skipSlack */ true);
         let totalNotificationsSent = 0;
         for (const group of flushResults) {
           totalNotificationsSent += group.items.length;

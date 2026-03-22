@@ -4,7 +4,7 @@ compatibility_date = "2025-03-15"
 account_id = "8eb4f67f852e00194242db7f998cb06b"
 
 [triggers]
-crons = ["0 10,16,22 * * *"]
+crons = ["0 10,12,16,22 * * *"]
 
 [[kv_namespaces]]
 binding = "KV"

@@ -320,3 +320,38 @@ export interface BaselineSnapshot extends DailySnapshot {
   type: 'baseline';
   note: string;
 }
+
+// --- Dashboard state types ---
+
+export type DashboardItemType = 'BLOCKED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING';
+export type DashboardSeverity = 'CRITICAL' | 'WARNING';
+
+export interface DashboardItem {
+  item_type: DashboardItemType;
+  severity: DashboardSeverity;
+  cm: string;
+  campaign_id: string;
+  campaign_name: string;
+  workspace_id: string;
+  workspace_name: string;
+  step: number | null;
+  variant: number | null;
+  variant_label: string | null;
+  context: Record<string, unknown>;
+  created_at: string;
+  resolved_at: string | null;
+  last_scan_at: string;
+}
+
+export interface ResolutionLogEntry {
+  item_type: DashboardItemType;
+  cm: string;
+  campaign_id: string;
+  campaign_name: string;
+  workspace_id: string;
+  step: number | null;
+  variant: number | null;
+  created_at: string;
+  resolved_at: string;
+  resolution_scan_id: string;
+}

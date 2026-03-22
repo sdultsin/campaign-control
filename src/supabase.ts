@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import type { AuditEntry, LeadsAuditEntry, RunSummary, DailySnapshot } from './types';
+import type { AuditEntry, LeadsAuditEntry, RunSummary, DailySnapshot, DashboardItemType } from './types';
 import { WORKER_VERSION } from './version';
 
 let client: SupabaseClient | null = null;
@@ -158,4 +158,178 @@ export async function writeNotificationToSupabase(
     worker_version: WORKER_VERSION,
   });
   if (error) console.error(`[supabase] notifications insert failed: ${error.message}`);
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard state helpers
+// ---------------------------------------------------------------------------
+
+export async function upsertDashboardItem(
+  sb: SupabaseClient,
+  item: {
+    item_type: string;
+    severity: string;
+    cm: string;
+    campaign_id: string;
+    campaign_name: string;
+    workspace_id: string;
+    workspace_name: string;
+    step: number | null;
+    variant: number | null;
+    variant_label: string | null;
+    context: Record<string, unknown>;
+  },
+): Promise<void> {
+  // Check if an active item already exists for this issue
+  // Must filter by step to match the unique index: (cm, campaign_id, item_type, COALESCE(step, -1))
+  let query = sb
+    .from('dashboard_items')
+    .select('id, created_at')
+    .eq('cm', item.cm)
+    .eq('campaign_id', item.campaign_id)
+    .eq('item_type', item.item_type)
+    .is('resolved_at', null);
+
+  if (item.step !== null) {
+    query = query.eq('step', item.step);
+  } else {
+    query = query.is('step', null);
+  }
+
+  const { data: existing } = await query.limit(1);
+  const match = existing?.[0];
+
+  if (match) {
+    // Update existing: refresh last_scan_at and context
+    const { error } = await sb
+      .from('dashboard_items')
+      .update({
+        last_scan_at: new Date().toISOString(),
+        context: item.context,
+        workspace_name: item.workspace_name,
+        campaign_name: item.campaign_name,
+        worker_version: WORKER_VERSION,
+      })
+      .eq('id', match.id);
+    if (error) console.error(`[supabase] dashboard_items update failed: ${error.message}`);
+  } else {
+    // Insert new item
+    const { error } = await sb
+      .from('dashboard_items')
+      .insert({
+        ...item,
+        created_at: new Date().toISOString(),
+        last_scan_at: new Date().toISOString(),
+        worker_version: WORKER_VERSION,
+      });
+    if (error) console.error(`[supabase] dashboard_items insert failed: ${error.message}`);
+  }
+}
+
+export async function resolveStaleItems(
+  sb: SupabaseClient,
+  cm: string,
+  activeKeys: Set<string>,
+  scanTimestamp: string,
+): Promise<number> {
+  // Get all active items for this CM
+  const { data: activeItems, error: fetchErr } = await sb
+    .from('dashboard_items')
+    .select('id, item_type, campaign_id, campaign_name, workspace_id, step, variant, created_at')
+    .eq('cm', cm)
+    .is('resolved_at', null);
+
+  if (fetchErr || !activeItems) {
+    console.error(`[supabase] dashboard_items fetch failed: ${fetchErr?.message}`);
+    return 0;
+  }
+
+  let resolved = 0;
+  for (const item of activeItems) {
+    const key = `${item.campaign_id}:${item.item_type}:${item.step ?? 'null'}`;
+    if (!activeKeys.has(key)) {
+      // This item was not found in the current scan - resolve it
+      const now = new Date().toISOString();
+      const { error: updateErr } = await sb
+        .from('dashboard_items')
+        .update({ resolved_at: now, worker_version: WORKER_VERSION })
+        .eq('id', item.id);
+      if (updateErr) {
+        console.error(`[supabase] dashboard_items resolve failed: ${updateErr.message}`);
+        continue;
+      }
+
+      // Write resolution log entry
+      const { error: logErr } = await sb
+        .from('resolution_log')
+        .insert({
+          item_type: item.item_type,
+          cm,
+          campaign_id: item.campaign_id,
+          campaign_name: item.campaign_name,
+          workspace_id: item.workspace_id,
+          step: item.step,
+          variant: item.variant,
+          created_at: item.created_at,
+          resolved_at: now,
+          resolution_scan_id: scanTimestamp,
+          worker_version: WORKER_VERSION,
+        });
+      if (logErr) console.error(`[supabase] resolution_log insert failed: ${logErr.message}`);
+
+      resolved++;
+    }
+  }
+  return resolved;
+}
+
+export async function getDashboardDigestData(
+  sb: SupabaseClient,
+  cm: string,
+): Promise<{
+  activeCount: number;
+  criticalCount: number;
+  killsSince: number;
+  reEnablesSince: number;
+}> {
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+  // Active dashboard items
+  const { count: activeCount } = await sb
+    .from('dashboard_items')
+    .select('*', { count: 'exact', head: true })
+    .eq('cm', cm)
+    .is('resolved_at', null);
+
+  const { count: criticalCount } = await sb
+    .from('dashboard_items')
+    .select('*', { count: 'exact', head: true })
+    .eq('cm', cm)
+    .eq('severity', 'CRITICAL')
+    .is('resolved_at', null);
+
+  // Kills since yesterday
+  const { count: killsSince } = await sb
+    .from('audit_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('cm', cm)
+    .eq('action', 'DISABLED')
+    .gte('timestamp', yesterday)
+    .not('worker_version', 'is', null);
+
+  // Re-enables since yesterday
+  const { count: reEnablesSince } = await sb
+    .from('audit_logs')
+    .select('*', { count: 'exact', head: true })
+    .eq('cm', cm)
+    .eq('action', 'RE_ENABLED')
+    .gte('timestamp', yesterday)
+    .not('worker_version', 'is', null);
+
+  return {
+    activeCount: activeCount ?? 0,
+    criticalCount: criticalCount ?? 0,
+    killsSince: killsSince ?? 0,
+    reEnablesSince: reEnablesSince ?? 0,
+  };
 }

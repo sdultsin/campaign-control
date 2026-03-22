@@ -78,7 +78,7 @@ export class NotificationCollector {
     return total;
   }
 
-  async flush(token: string, isDryRun: boolean): Promise<FlushResult[]> {
+  async flush(token: string, isDryRun: boolean, skipSlack = false): Promise<FlushResult[]> {
     const results: FlushResult[] = [];
 
     for (const [channelId, types] of this.buckets) {
@@ -87,10 +87,12 @@ export class NotificationCollector {
 
         const title = GROUP_TITLES[type](items.length);
 
-        if (isDryRun) {
-          console.log(`[DRY RUN] ${title} → channel=${channelId}`);
-          for (const item of items) {
-            console.log(`[DRY RUN]   └─ ${item.detail.split('\n')[0]}`);
+        if (isDryRun || skipSlack) {
+          if (isDryRun) {
+            console.log(`[DRY RUN] ${title} → channel=${channelId}`);
+            for (const item of items) {
+              console.log(`[DRY RUN]   └─ ${item.detail.split('\n')[0]}`);
+            }
           }
           results.push({
             channelId, type, title, threadTs: null,
@@ -424,4 +426,36 @@ export async function sendLeadsExhaustedNotification(
     return { threadTs: null, replySuccess: false };
   }
   return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
+}
+
+// ---------------------------------------------------------------------------
+// Morning digest
+// ---------------------------------------------------------------------------
+
+export async function sendMorningDigest(
+  channel: string,
+  cm: string,
+  dashboardUrl: string,
+  summary: { activeCount: number; criticalCount: number; killsSince: number; reEnablesSince: number },
+  token: string,
+  isDryRun: boolean,
+): Promise<void> {
+  const statusLine = summary.criticalCount > 0
+    ? `Status: ${summary.criticalCount} campaign${summary.criticalCount === 1 ? '' : 's'} need${summary.criticalCount === 1 ? 's' : ''} attention`
+    : 'Status: No critical alerts';
+
+  const text = `*Campaign Control - Daily Summary*
+
+Action items: ${summary.activeCount}
+Since yesterday: ${summary.killsSince} variant${summary.killsSince === 1 ? '' : 's'} turned off, ${summary.reEnablesSince} re-enabled
+${statusLine}
+
+<${dashboardUrl}|View Dashboard>`;
+
+  if (isDryRun) {
+    console.log(`[DRY RUN] Morning digest -> ${cm} (${channel}):\n${text}`);
+    return;
+  }
+
+  await postSlackMessage(channel, text, token);
 }
