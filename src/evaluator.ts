@@ -94,14 +94,6 @@ export function evaluateStep(
   return { kills: confirmedKills, blocked };
 }
 
-// Return the more severe of two NotificationType values.
-// Severity order: LAST_VARIANT > DOWN_TO_ONE > null
-function mergeNotification(a: NotificationType, b: NotificationType): NotificationType {
-  if (a === 'LAST_VARIANT' || b === 'LAST_VARIANT') return 'LAST_VARIANT';
-  if (a === 'DOWN_TO_ONE' || b === 'DOWN_TO_ONE') return 'DOWN_TO_ONE';
-  return null;
-}
-
 /**
  * Check ALL active variants in a step that are approaching the kill threshold.
  * Returns a warning for every active variant that has consumed >= 80% of threshold sends

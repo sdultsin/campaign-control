@@ -1,4 +1,4 @@
-import type { KillAction, Env, LastVariantWarning, RescanEntry, LeadsCheckCandidate } from './types';
+import type { KillAction, LastVariantWarning, RescanEntry, LeadsCheckCandidate } from './types';
 import { VARIANT_LABELS, OFF_CAMPAIGN_BUFFER } from './config';
 
 // ---------------------------------------------------------------------------
@@ -255,26 +255,6 @@ Action needed: Add 1+ new variants to this step, then manually turn off Variant 
   return message;
 }
 
-export async function sendKillNotification(action: KillAction, channelId: string, env: Env): Promise<{ threadTs: string | null; replySuccess: boolean }> {
-  const title = formatKillTitle(action);
-  const details = formatKillDetails(action);
-  if (env.DRY_RUN === 'true') {
-    console.log(`[DRY RUN] ${title}\n${details}`);
-    return { threadTs: null, replySuccess: false };
-  }
-  return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
-}
-
-export async function sendLastVariantNotification(action: KillAction, channelId: string, env: Env): Promise<{ threadTs: string | null; replySuccess: boolean }> {
-  const title = formatLastVariantTitle(action);
-  const details = formatLastVariantDetails(action);
-  if (env.DRY_RUN === 'true') {
-    console.log(`[DRY RUN] ${title}\n${details}`);
-    return { threadTs: null, replySuccess: false };
-  }
-  return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
-}
-
 export function formatWarningTitle(
   warning: LastVariantWarning,
   stepIndex: number,
@@ -304,23 +284,6 @@ This variant will be auto-disabled when it hits ${warning.threshold.toLocaleStri
   return message;
 }
 
-export async function sendWarningNotification(
-  warning: LastVariantWarning,
-  campaignName: string,
-  workspaceName: string,
-  stepIndex: number,
-  channelId: string,
-  env: Env,
-): Promise<{ threadTs: string | null; replySuccess: boolean }> {
-  const title = formatWarningTitle(warning, stepIndex);
-  const details = formatWarningDetails(warning, campaignName, workspaceName, stepIndex);
-  if (env.DRY_RUN === 'true') {
-    console.log(`[DRY RUN] ${title}\n${details}`);
-    return { threadTs: null, replySuccess: false };
-  }
-  return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
-}
-
 export function formatRescanTitle(entry: RescanEntry): string {
   return `:white_check_mark: Variant ${entry.variantLabel} re-enabled in Step ${entry.stepIndex + 1}`;
 }
@@ -344,22 +307,6 @@ Late-arriving opportunities brought it to ${currentOpportunities} (ratio: ${curr
 No CM action needed.`;
 }
 
-export async function sendRescanNotification(
-  entry: RescanEntry,
-  currentOpportunities: number,
-  currentRatio: string,
-  channelId: string,
-  env: Env,
-): Promise<{ threadTs: string | null; replySuccess: boolean }> {
-  const title = formatRescanTitle(entry);
-  const details = formatRescanDetails(entry, currentOpportunities, currentRatio);
-  if (env.DRY_RUN === 'true') {
-    console.log(`[DRY RUN] ${title}\n${details}`);
-    return { threadTs: null, replySuccess: false };
-  }
-  return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
-}
-
 export function formatLeadsWarningTitle(): string {
   return `:warning: Leads Running Low`;
 }
@@ -373,22 +320,6 @@ export function formatLeadsWarningDetails(
 Campaign: ${candidate.campaignName}
 
 ${uncontacted.toLocaleString()} / ${totalLeads.toLocaleString()} leads uncontacted. Daily limit: ${candidate.dailyLimit.toLocaleString()}.`;
-}
-
-export async function sendLeadsWarningNotification(
-  candidate: LeadsCheckCandidate,
-  uncontacted: number,
-  totalLeads: number,
-  channelId: string,
-  env: Env,
-): Promise<{ threadTs: string | null; replySuccess: boolean }> {
-  const title = formatLeadsWarningTitle();
-  const details = formatLeadsWarningDetails(candidate, uncontacted, totalLeads);
-  if (env.DRY_RUN === 'true') {
-    console.log(`[DRY RUN] ${title}\n${details}`);
-    return { threadTs: null, replySuccess: false };
-  }
-  return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
 }
 
 export function formatLeadsExhaustedTitle(): string {
@@ -410,22 +341,6 @@ Campaign: ${candidate.campaignName}
   }
 
   return message;
-}
-
-export async function sendLeadsExhaustedNotification(
-  candidate: LeadsCheckCandidate,
-  totalLeads: number,
-  activeLeads: number,
-  channelId: string,
-  env: Env,
-): Promise<{ threadTs: string | null; replySuccess: boolean }> {
-  const title = formatLeadsExhaustedTitle();
-  const details = formatLeadsExhaustedDetails(candidate, totalLeads, activeLeads);
-  if (env.DRY_RUN === 'true') {
-    console.log(`[DRY RUN] ${title}\n${details}`);
-    return { threadTs: null, replySuccess: false };
-  }
-  return postThreadedMessage(channelId, title, details, env.SLACK_BOT_TOKEN);
 }
 
 // ---------------------------------------------------------------------------

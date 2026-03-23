@@ -33,6 +33,7 @@ import {
   DASHBOARD_BASE_URL,
   OPP_RUNWAY_MULTIPLIER,
   DRY_RUN_CMS,
+  MAX_PERSISTENCE_CHECKS,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -1036,6 +1037,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                           ? 'Infinity'
                           : (warning.sent / warning.opportunities).toFixed(1),
                         threshold,
+                        effective_threshold: warning.opportunities > 0
+                          ? Math.round(threshold * OPP_RUNWAY_MULTIPLIER)
+                          : threshold,
                         rule: `${warning.pctConsumed}% of threshold consumed (${warning.sent}/${threshold} sends)`,
                       },
                       safety: { survivingVariants: -1, notification: null },
@@ -1878,7 +1882,6 @@ async function executeScheduledRun(env: Env): Promise<void> {
       // -----------------------------------------------------------------------
       console.log(JSON.stringify({ event: 'phase_start', phase: 'persistence', elapsedMs: Date.now() - runStart }));
       let ghostCount = 0;
-      const MAX_PERSISTENCE_CHECKS = 20;
       let persistenceChecks = 0;
 
       try {

@@ -65,5 +65,8 @@ export function resolveCmName(
     }
   }
 
+  if (!workspaceConfig.defaultCm) {
+    console.warn(`[CC] Unresolved CM for campaign: ${campaignName} in shared workspace`);
+  }
   return null;
 }

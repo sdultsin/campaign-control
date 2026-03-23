@@ -127,6 +127,9 @@ export const RESCAN_MAX_WINDOW_HOURS = 48;
 export const LEADS_WARNING_DEDUP_TTL_SECONDS = 172800;   // 48 hours
 export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
 
+// Kill persistence monitor: max KV keys to check per run
+export const MAX_PERSISTENCE_CHECKS = 100;
+
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
 export const CRON_HOURS_UTC = [10, 16, 22]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.

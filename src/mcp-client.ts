@@ -80,7 +80,7 @@ export class McpClient {
     });
   }
 
-  async callTool<T = unknown>(name: string, args: Record<string, unknown>): Promise<T> {
+  async callTool<T = unknown>(name: string, args: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
     if (!this.endpoint) {
       throw new Error('McpClient is not connected. Call connect() first.');
     }
@@ -91,7 +91,7 @@ export class McpClient {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Timeout waiting for tool response: ${name} (id=${id})`));
-      }, 30_000);
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve: (value) => {

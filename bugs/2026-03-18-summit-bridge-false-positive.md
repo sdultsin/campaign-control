@@ -75,5 +75,5 @@ The sent count is accurate (14,135 matches in both API and UI). Only the opportu
 
 - Pilot log: `builds/auto-turn-off/pilot-log-2026-03-18.md` (Evening Findings section)
 - TDD spec: `specs/cc-date-filter-fix-v1-tdd.md` (Section 5, risk assessment corrected)
-- Troubleshooting: `.claude/memory/troubleshooting.md` (new entry added)
+- Troubleshooting: `memory/troubleshooting.md` (new entry added)
 - Worker code: `builds/auto-turn-off/src/instantly.ts:22-37` (getStepAnalytics call)
