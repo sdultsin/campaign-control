@@ -118,7 +118,7 @@ export async function buildDashboardState(
       context: {
         total: entry.leads.total,
         contacted: entry.leads.contacted,
-        uncontacted: entry.leads.uncontacted,
+        uncontacted: entry.leads.active_in_sequence,
         active: entry.leads.active,
         daily_limit: entry.leads.dailyLimit,
       },
@@ -141,7 +141,7 @@ export async function buildDashboardState(
       variant_label: null,
       context: {
         total: entry.leads.total,
-        uncontacted: entry.leads.uncontacted,
+        uncontacted: entry.leads.active_in_sequence,
         active: entry.leads.active,
         daily_limit: entry.leads.dailyLimit,
       },

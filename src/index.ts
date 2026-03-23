@@ -1618,7 +1618,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 leads: {
                   total: totalLeads,
                   contacted,
-                  uncontacted,
+                  active_in_sequence: uncontacted,
                   completed,
                   active,
                   bounced,
@@ -1668,7 +1668,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 leads: {
                   total: totalLeads,
                   contacted,
-                  uncontacted,
+                  active_in_sequence: uncontacted,
                   completed,
                   active,
                   bounced,
@@ -1718,7 +1718,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 leads: {
                   total: totalLeads,
                   contacted,
-                  uncontacted,
+                  active_in_sequence: uncontacted,
                   completed,
                   active,
                   bounced,
@@ -1750,7 +1750,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 workspaceName: candidate.workspaceName,
                 cmName: candidate.cmName,
                 alertedAt: new Date().toISOString(),
-                uncontacted,
+                active_in_sequence: uncontacted,
                 totalLeads,
                 dailyLimit: candidate.dailyLimit,
               };
@@ -1770,7 +1770,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 leads: {
                   total: totalLeads,
                   contacted,
-                  uncontacted,
+                  active_in_sequence: uncontacted,
                   completed,
                   active,
                   bounced,
@@ -1831,7 +1831,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   leads: {
                     total: totalLeads,
                     contacted,
-                    uncontacted,
+                    active_in_sequence: uncontacted,
                     completed,
                     active,
                     bounced,

@@ -55,7 +55,7 @@ export interface LeadsWarningEntry {
   workspaceName: string;
   cmName: string | null;
   alertedAt: string;
-  uncontacted: number;
+  active_in_sequence: number;
   totalLeads: number;
   dailyLimit: number;
 }
@@ -81,7 +81,7 @@ export interface LeadsAuditEntry {
   leads: {
     total: number;
     contacted: number;
-    uncontacted: number;
+    active_in_sequence: number;
     completed: number;
     /** Active leads from count_leads endpoint — leads that haven't completed the sequence */
     active: number;

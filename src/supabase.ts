@@ -58,7 +58,7 @@ export async function writeLeadsAuditToSupabase(
     cm: entry.cm,
     leads_total: entry.leads.total,
     leads_contacted: entry.leads.contacted,
-    leads_uncontacted: entry.leads.uncontacted,
+    leads_active_in_sequence: entry.leads.active_in_sequence,
     leads_completed: entry.leads.completed,
     leads_active: entry.leads.active,
     leads_bounced: entry.leads.bounced,
