@@ -465,8 +465,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
 
-    // Dashboard state: collect BLOCKED and leads issues for Phase 5
+    // Dashboard state: collect BLOCKED, dry-run kills, and leads issues for Phase 5
     const dashboardBlocked: AuditEntry[] = [];
+    const dashboardDryRunKills: AuditEntry[] = [];
     const dashboardLeadsExhausted: LeadsAuditEntry[] = [];
     const dashboardLeadsWarnings: LeadsAuditEntry[] = [];
 
@@ -831,6 +832,10 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     if (sb) await writeAuditLogToSupabase(sb, auditEntry).catch((err) =>
                       console.error(`[supabase] audit write failed: ${err}`),
                     );
+                    // Collect for dashboard Action Required (per-CM dry run review)
+                    if (DRY_RUN_CMS.has(cmName ?? '')) {
+                      dashboardDryRunKills.push(auditEntry);
+                    }
                     console.log(
                       `[DRY RUN] Would kill: ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${kill.variantIndex} → channel=${channelId || 'FALLBACK'} cm=${cmName ?? 'unknown'}`,
                     );
@@ -1998,6 +2003,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
             dashboardBlocked,
             dashboardLeadsExhausted,
             dashboardLeadsWarnings,
+            dashboardDryRunKills,
           );
           console.log(`[auto-turnoff] Dashboard state: ${dashResult.upserted} upserted, ${dashResult.resolved} resolved`);
         } catch (dashErr) {

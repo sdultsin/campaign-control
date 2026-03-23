@@ -89,6 +89,7 @@ export interface LeadsAuditEntry {
     skipped: number;
     unsubscribed: number;
     dailyLimit: number;
+    source?: 'batch' | 'mcp';
   };
   dryRun: boolean;
 }
@@ -325,7 +326,7 @@ export interface BaselineSnapshot extends DailySnapshot {
 
 // --- Dashboard state types ---
 
-export type DashboardItemType = 'BLOCKED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING';
+export type DashboardItemType = 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING';
 export type DashboardSeverity = 'CRITICAL' | 'WARNING';
 
 export interface DashboardItem {

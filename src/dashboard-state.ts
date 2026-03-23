@@ -34,6 +34,7 @@ export async function buildDashboardState(
   blockedActions: AuditEntry[],
   leadsExhausted: LeadsAuditEntry[],
   leadsWarnings: LeadsAuditEntry[],
+  dryRunKills: AuditEntry[] = [],
 ): Promise<{ upserted: number; resolved: number }> {
   // Collect all detected issues, keyed by CM
   const issuesByCm = new Map<string, DetectedIssue[]>();
@@ -71,6 +72,31 @@ export async function buildDashboardState(
         effective_threshold: entry.trigger.effective_threshold ?? entry.trigger.threshold,
         rule: entry.trigger.rule,
         surviving_variants: entry.safety.survivingVariants,
+      },
+    });
+  }
+
+  // DRY_RUN kills -> CRITICAL dashboard items (review before going live)
+  for (const entry of dryRunKills) {
+    if (!entry.cm) continue;
+    addIssue({
+      item_type: 'DISABLED',
+      severity: 'CRITICAL',
+      cm: entry.cm,
+      campaign_id: entry.campaignId,
+      campaign_name: entry.campaign,
+      workspace_id: entry.workspaceId,
+      workspace_name: entry.workspace,
+      step: entry.step,
+      variant: entry.variant,
+      variant_label: entry.variantLabel,
+      context: {
+        sent: entry.trigger.sent,
+        opportunities: entry.trigger.opportunities,
+        ratio: entry.trigger.ratio,
+        threshold: entry.trigger.threshold,
+        effective_threshold: entry.trigger.effective_threshold ?? entry.trigger.threshold,
+        rule: entry.trigger.rule,
       },
     });
   }
