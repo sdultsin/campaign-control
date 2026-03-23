@@ -32,6 +32,7 @@ import {
   CM_MONITOR_CHANNELS,
   DASHBOARD_BASE_URL,
   OPP_RUNWAY_MULTIPLIER,
+  DRY_RUN_CMS,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -564,6 +565,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
             // Pilot filter: skip campaigns whose CM is not in the pilot
             if (!isPilotCampaign(cmName)) return;
+
+            // Per-CM dry run: evaluate and log but don't kill or notify
+            const isDryRun = env.DRY_RUN === 'true' || DRY_RUN_CMS.has(cmName ?? '');
 
             try {
               totalCampaignsEvaluated++;

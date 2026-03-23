@@ -60,7 +60,7 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   { id: 'koi-and-destroy', name: 'Koi and Destroy', product: 'FUNDING', defaultCm: 'TOMI' },
   { id: 'outlook-2', name: 'Outlook 2', product: 'FUNDING', defaultCm: 'MARCOS' },
   { id: 'prospects-power', name: 'Prospects Power', product: 'FUNDING', defaultCm: 'SHAAN' },
-  { id: 'automated-applications', name: 'Automated applications', product: 'FUNDING', defaultCm: 'IDO' },
+  { id: 'automated-applications', name: 'Automated applications', product: 'FUNDING', defaultCm: 'EYVER' },
   { id: 'outlook-1', name: 'Outlook 1', product: 'FUNDING', defaultCm: 'IDO' },
   // Funding - shared workspaces (no single default CM)
   { id: 'renaissance-4', name: 'Renaissance 4', product: 'FUNDING', defaultCm: null },
@@ -89,12 +89,20 @@ export function getWorkspaceConfig(workspaceId: string): WorkspaceConfig | null 
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
-export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'IDO', 'SAMUEL']);
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'SAMUEL']);
+
+// ---------------------------------------------------------------------------
+// Per-CM dry run: CMs in this set are evaluated and logged (dashboard populates)
+// but variants are NOT killed and Slack notifications are NOT sent.
+// Remove a CM from this set to go live with kills for them.
+// ---------------------------------------------------------------------------
+export const DRY_RUN_CMS: Set<string> = new Set(['EYVER']);
 
 // CM -> Slack channel for monitor notifications
 export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'ALEX': 'C0AN70F328G',     // #cc-alex
   'CARLOS': 'C0AMRK81MRP',   // #cc-carlos
+  'EYVER': 'C0AN6L2KLLW',    // #cc-eyver
   'IDO': 'C0AMRK842PK',      // #cc-ido
   'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
 };
