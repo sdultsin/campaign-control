@@ -1,5 +1,6 @@
 import { McpClient } from './mcp-client';
 import { InstantlyApi } from './instantly';
+import { InstantlyDirectApi } from './instantly-direct';
 import { getSupabaseClient } from './supabase';
 import type { Env } from './types';
 
@@ -135,14 +136,16 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
   }
 
   // ---------------------------------------------------------------------------
-  // LIVE RUN: connect to MCP and batch-revert
+  // LIVE RUN: use direct API or MCP to batch-revert
   // ---------------------------------------------------------------------------
-  const mcp = new McpClient();
-  const instantly = new InstantlyApi(mcp);
+  const useDirectApi = env.INSTANTLY_MODE === 'direct' && env.INSTANTLY_API_KEYS;
+  const mcp = useDirectApi ? null : new McpClient();
+  const mcpApi = mcp ? new InstantlyApi(mcp) : null;
+  const directApi = useDirectApi ? new InstantlyDirectApi(env.INSTANTLY_API_KEYS) : null;
   const results: CampaignResult[] = [];
 
   try {
-    await mcp.connect();
+    if (mcp) await mcp.connect();
 
     for (const [campaignId, campaignTargets] of byCampaign) {
       const first = campaignTargets[0];
@@ -156,7 +159,9 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
 
       try {
         // Fetch current campaign details
-        const detail = await instantly.getCampaignDetails(first.workspaceId, campaignId);
+        const detail = directApi
+          ? await directApi.getCampaignDetails(first.workspaceId, campaignId)
+          : await mcpApi!.getCampaignDetails(first.workspaceId, campaignId);
         const cloned = structuredClone(detail.sequences);
         let needsUpdate = false;
 
@@ -176,15 +181,21 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
         }
 
         if (needsUpdate) {
-          // Single update_campaign call per campaign (batch all variant-steps)
-          await mcp.callTool('update_campaign', {
-            workspace_id: first.workspaceId,
-            campaign_id: campaignId,
-            updates: { sequences: cloned },
-          });
+          // Single update call per campaign (batch all variant-steps)
+          if (directApi) {
+            await directApi.updateCampaign(first.workspaceId, campaignId, { sequences: cloned });
+          } else {
+            await mcp!.callTool('update_campaign', {
+              workspace_id: first.workspaceId,
+              campaign_id: campaignId,
+              updates: { sequences: cloned },
+            });
+          }
 
           // Verify with a single getCampaignDetails call
-          const verified = await instantly.getCampaignDetails(first.workspaceId, campaignId);
+          const verified = directApi
+            ? await directApi.getCampaignDetails(first.workspaceId, campaignId)
+            : await mcpApi!.getCampaignDetails(first.workspaceId, campaignId);
           for (const vr of result.variants) {
             if (vr.status !== 'reverted') continue;
             const t = campaignTargets.find(
@@ -232,9 +243,11 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
       results.push(result);
     }
   } finally {
-    try {
-      await mcp.close();
-    } catch { /* ignore */ }
+    if (mcp) {
+      try {
+        await mcp.close();
+      } catch { /* ignore */ }
+    }
   }
 
   const totalReverted = results.reduce(
