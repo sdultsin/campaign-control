@@ -89,7 +89,7 @@ export function getWorkspaceConfig(workspaceId: string): WorkspaceConfig | null 
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
-export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'SAMUEL']);
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'SAMUEL']);
 
 // ---------------------------------------------------------------------------
 // Per-CM dry run: CMs in this set are evaluated and logged (dashboard populates)
@@ -104,6 +104,7 @@ export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'CARLOS': 'C0AMRK81MRP',   // #cc-carlos
   'EYVER': 'C0AN6L2KLLW',    // #cc-eyver
   'IDO': 'C0AMRK842PK',      // #cc-ido
+  'LAUTARO': 'C0AMXSTGEF9',  // #cc-lautaro
   'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
 };
 
