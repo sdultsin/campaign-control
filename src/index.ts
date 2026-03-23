@@ -413,6 +413,21 @@ async function executeMorningDigest(env: Env): Promise<void> {
 async function executeScheduledRun(env: Env): Promise<void> {
     const runStart = Date.now();
 
+    // --- Env var validation ---
+    // Fail fast with descriptive errors rather than cryptic runtime failures.
+    if (!env.INSTANTLY_API_KEYS) {
+      throw new Error('[auto-turnoff] Missing required env var: INSTANTLY_API_KEYS');
+    }
+    if (!env.SLACK_BOT_TOKEN) {
+      throw new Error('[auto-turnoff] Missing required env var: SLACK_BOT_TOKEN');
+    }
+    if (!env.KILLS_ENABLED) {
+      throw new Error('[auto-turnoff] Missing required env var: KILLS_ENABLED (set to "true" or "false")');
+    }
+    if (!env.KV) {
+      throw new Error('[auto-turnoff] Missing required binding: KV namespace');
+    }
+
     console.log(JSON.stringify({
       event: 'run_start',
       timestamp: new Date().toISOString(),

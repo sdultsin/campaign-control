@@ -12,7 +12,12 @@ export class InstantlyDirectApi {
 
   constructor(keyMapJson: string) {
     // Parse JSON map of workspace slug -> API key
-    const parsed = JSON.parse(keyMapJson) as Record<string, string>;
+    let parsed: Record<string, string>;
+    try {
+      parsed = JSON.parse(keyMapJson) as Record<string, string>;
+    } catch (e) {
+      throw new Error(`[instantly-direct] Failed to parse INSTANTLY_API_KEYS JSON: ${e instanceof Error ? e.message : String(e)}`);
+    }
     this.keyMap = new Map(Object.entries(parsed));
   }
 
