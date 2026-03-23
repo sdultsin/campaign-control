@@ -96,7 +96,7 @@ export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO',
 // but variants are NOT killed and Slack notifications are NOT sent.
 // Remove a CM from this set to go live with kills for them.
 // ---------------------------------------------------------------------------
-export const DRY_RUN_CMS: Set<string> = new Set(['EYVER']);
+export const DRY_RUN_CMS: Set<string> = new Set([]);
 
 // CM -> Slack channel for monitor notifications
 export const CM_MONITOR_CHANNELS: Record<string, string> = {
