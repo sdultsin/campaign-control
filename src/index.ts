@@ -51,6 +51,9 @@ import { buildDashboardState } from './dashboard-state';
 // KV lock helpers
 // ---------------------------------------------------------------------------
 
+// TOCTOU race: two workers could both read "no lock" and both proceed.
+// Accepted risk: CF cron is single-instance, stale-trigger guard rejects late runs,
+// and per-kill dedup prevents duplicate actions even if two runs overlap.
 async function acquireLock(kv: KVNamespace): Promise<boolean> {
   const existing = await kv.get('auto-turnoff-lock');
   if (existing) {
