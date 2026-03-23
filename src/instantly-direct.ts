@@ -44,9 +44,17 @@ export class InstantlyDirectApi {
       }
     }
 
-    const res = await fetch(url.toString(), {
+    let res = await fetch(url.toString(), {
       headers: { 'Authorization': `Bearer ${apiKey}` },
     });
+    // Single retry with 2s backoff for rate-limit responses
+    if (res.status === 429) {
+      console.warn(`[instantly-direct] 429 rate-limited on GET ${path}, retrying in 2s`);
+      await new Promise((r) => setTimeout(r, 2000));
+      res = await fetch(url.toString(), {
+        headers: { 'Authorization': `Bearer ${apiKey}` },
+      });
+    }
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       throw new Error(`Instantly API ${res.status}: ${path} - ${body}`);
