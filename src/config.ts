@@ -46,8 +46,8 @@ export const OPP_RUNWAY_MULTIPLIER = 1.1;
 /** Winner threshold = kill threshold * WINNER_THRESHOLD_MULTIPLIER (0.66x). */
 export const WINNER_THRESHOLD_MULTIPLIER = 0.66;
 
-/** Minimum opportunities required to qualify as a winner. Eliminates single-opp flukes. */
-export const WINNER_MIN_OPPS = 2;
+/** Minimum opportunities required to qualify as a winner. Eliminates low-sample flukes. */
+export const WINNER_MIN_OPPS = 5;
 
 /** Minimum sends = kill_threshold * WINNER_MIN_SENDS_MULTIPLIER. Variant must have been in market long enough. */
 export const WINNER_MIN_SENDS_MULTIPLIER = 0.5;
