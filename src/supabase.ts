@@ -184,7 +184,7 @@ export async function upsertDashboardItem(
   },
 ): Promise<void> {
   // Check if an active item already exists for this issue
-  // Must filter by step to match the unique index: (cm, campaign_id, item_type, COALESCE(step, -1))
+  // Must filter by step+variant to match the unique index: (cm, campaign_id, item_type, COALESCE(step, -1), COALESCE(variant, -1))
   let query = sb
     .from('dashboard_items')
     .select('id, created_at, dismissed_at')
@@ -197,6 +197,12 @@ export async function upsertDashboardItem(
     query = query.eq('step', item.step);
   } else {
     query = query.is('step', null);
+  }
+
+  if (item.variant !== null && item.variant !== undefined) {
+    query = query.eq('variant', item.variant);
+  } else {
+    query = query.is('variant', null);
   }
 
   const { data: existing } = await query.limit(1);
@@ -212,6 +218,8 @@ export async function upsertDashboardItem(
       .update({
         last_scan_at: new Date().toISOString(),
         context: item.context,
+        variant: item.variant,
+        variant_label: item.variant_label,
         workspace_name: item.workspace_name,
         campaign_name: item.campaign_name,
         worker_version: WORKER_VERSION,
@@ -254,7 +262,7 @@ export async function resolveStaleItems(
 
   let resolved = 0;
   for (const item of activeItems) {
-    const key = `${item.campaign_id}:${item.item_type}:${item.step ?? 'null'}`;
+    const key = `${item.campaign_id}:${item.item_type}:${item.step ?? 'null'}:${item.variant ?? 'null'}`;
     if (!activeKeys.has(key)) {
       // This item was not found in the current scan - resolve it
       const now = new Date().toISOString();

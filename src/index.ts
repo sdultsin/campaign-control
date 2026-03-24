@@ -1284,6 +1284,9 @@ async function executeScheduledRun(env: Env): Promise<void> {
                           console.error(`[supabase] audit write failed: ${err}`),
                         );
 
+                        // Feed confirmed kills into dashboard state (DISABLED items)
+                        result.dryRunKills.push(pk.auditEntry);
+
                         const rescanEntry: RescanEntry = {
                           workspaceId: workspace.id,
                           workspaceName: workspace.name,

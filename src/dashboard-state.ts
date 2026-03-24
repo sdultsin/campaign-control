@@ -47,7 +47,7 @@ export async function buildDashboardState(
     if (!activeKeysByCm.has(issue.cm)) activeKeysByCm.set(issue.cm, new Set());
     issuesByCm.get(issue.cm)!.push(issue);
     activeKeysByCm.get(issue.cm)!.add(
-      `${issue.campaign_id}:${issue.item_type}:${issue.step ?? 'null'}`
+      `${issue.campaign_id}:${issue.item_type}:${issue.step ?? 'null'}:${issue.variant ?? 'null'}`
     );
   }
 
