@@ -177,6 +177,7 @@ export interface Env {
   KILLS_ENABLED: string;
   INSTANTLY_API_KEYS: string;  // JSON map: { "workspace-slug-or-name": "base64-api-key", ... }
   INSTANTLY_MODE: string; // "direct" | "mcp"
+  AUDIT_SLACK_CHANNEL: string;  // Channel for audit digests (default: #cc-admin)
 }
 
 export interface LastVariantWarning {
@@ -428,4 +429,73 @@ export interface ResolutionLogEntry {
   created_at: string;
   resolved_at: string;
   resolution_scan_id: string;
+}
+
+// --- Self-audit types (Phase 7) ---
+
+export type AuditVerdict = 'GREEN' | 'YELLOW' | 'RED';
+export type AuditCheckStatus = 'PASS' | 'FAIL' | 'WARN' | 'SKIP';
+export type AuditCheckSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
+
+export interface AuditCheckResult {
+  name: string;
+  status: AuditCheckStatus;
+  expected: string;
+  actual: string;
+  detail: string | null;
+  severity: AuditCheckSeverity;
+}
+
+export interface AuditConfigSnapshot {
+  pilot_cms: string[];
+  dry_run_cms: string[];
+  workspace_count: number;
+  max_kills_per_run: number;
+  kills_enabled: boolean;
+}
+
+export interface KvSummary {
+  rescan_keys: number;
+  exempt_keys: number;
+  ghost_notified_keys: number;
+  kill_keys: number;
+  winner_notified_keys: number;
+}
+
+export interface TrailingAvg {
+  campaigns_evaluated: number;
+  variants_disabled: number;
+  variants_blocked: number;
+  errors: number;
+  run_count: number;
+  config_changed: boolean;
+}
+
+export interface AuditResult {
+  run_timestamp: string;
+  worker_version: string;
+  verdict: AuditVerdict;
+  checks_total: number;
+  checks_passed: number;
+  checks_failed: number;
+  checks_warned: number;
+  checks_skipped: number;
+  kills: number;
+  blocks: number;
+  winners: number;
+  errors: number;
+  ghosts: number;
+  campaigns_evaluated: number;
+  workspaces_processed: number;
+  duration_ms: number;
+  delta_kills: number | null;
+  delta_blocks: number | null;
+  delta_winners: number | null;
+  delta_errors: number | null;
+  delta_campaigns: number | null;
+  check_results: AuditCheckResult[];
+  config_snapshot: AuditConfigSnapshot;
+  kv_summary: KvSummary | null;
+  trailing_avg: TrailingAvg | null;
+  audit_duration_ms: number;
 }

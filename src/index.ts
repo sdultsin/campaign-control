@@ -48,6 +48,7 @@ import type {
   CampaignResult, WinnerEntry, GhostDetail,
 } from './types';
 
+import { runSelfAudit } from './self-audit';
 import { evaluateLeadDepletion } from './leads-monitor';
 import { buildDashboardState } from './dashboard-state';
 
@@ -2477,6 +2478,24 @@ async function executeScheduledRun(env: Env): Promise<void> {
       if (sb) await writeRunSummaryToSupabase(sb, runSummary).catch((err) =>
         console.error(`[supabase] run summary write failed: ${err}`),
       );
+
+      // PHASE 7: SELF-AUDIT
+      if (sb) {
+        console.log(JSON.stringify({ event: 'phase_start', phase: 'self_audit', elapsedMs: Date.now() - runStart }));
+        try {
+          await runSelfAudit(
+            sb,
+            env.KV,
+            runSummary,
+            env.SLACK_BOT_TOKEN,
+            env.AUDIT_SLACK_CHANNEL || 'C0APDQ3MMR6',
+            DASHBOARD_BASE_URL,
+          );
+          console.log('[auto-turnoff] Phase 7 (self-audit) complete');
+        } catch (auditErr) {
+          console.error(`[auto-turnoff] Phase 7 (self-audit) error: ${auditErr}`);
+        }
+      }
     } finally {
       // RELEASE LOCK
       await releaseLock(env.KV).catch((err) =>
