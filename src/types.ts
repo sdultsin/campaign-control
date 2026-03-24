@@ -241,6 +241,7 @@ export interface RunSummary {
   campaignsEvaluated: number;
   variantsDisabled: number;
   variantsBlocked: number;
+  variantsKillsPaused: number;
   variantsWarned: number;
   errors: number;
   durationMs: number;
@@ -322,6 +323,40 @@ export interface DailySnapshot {
 export interface BaselineSnapshot extends DailySnapshot {
   type: 'baseline';
   note: string;
+}
+
+// --- Campaign result (returned from processWithConcurrency callback) ---
+
+export interface CampaignResult {
+  /** Whether the campaign was evaluated (false if skipped by pilot filter) */
+  evaluated: boolean;
+  /** CM name for this campaign (needed for snapshot per-CM tally) */
+  cmName: string | null;
+  /** Number of successful kills executed */
+  kills: number;
+  /** Blocked audit entries (last-variant blocks + KILLS_ENABLED=false blocks) */
+  blocked: AuditEntry[];
+  /** Dry-run kill audit entries (for per-CM dashboard review) */
+  dryRunKills: AuditEntry[];
+  /** Number of variants warned */
+  warnings: number;
+  /** Number of variants deferred (kill cap reached) */
+  deferred: number;
+  /** Number of variants with kills paused (KILLS_ENABLED=false) */
+  killsPaused: number;
+  /** Number of errors during processing */
+  errors: number;
+  /** Leads check candidate for Phase 3 */
+  leadsCandidate: LeadsCheckCandidate | null;
+  /** Campaign-level snapshot data for daily snapshot aggregation */
+  snapshot: {
+    totalVariants: number;
+    activeVariants: number;
+    disabledVariants: number;
+    aboveThreshold: number;
+    steps: number;
+    health: CampaignHealthEntry;
+  } | null;
 }
 
 // --- Dashboard state types ---

@@ -158,7 +158,7 @@ function renderDateView(
           <td><span style="color:${e.action === 'DISABLED' ? '#ef4444' : e.action === 'BLOCKED' ? '#f59e0b' : '#3b82f6'}">${e.action}</span></td>
           <td>${escapeHtml(e.workspace)}</td>
           <td title="${escapeHtml(e.campaign)}">${escapeHtml(e.campaign.length > 45 ? e.campaign.slice(0, 42) + '...' : e.campaign)}</td>
-          <td>${e.step + 1}</td>
+          <td>${e.step}</td>
           <td>${e.variantLabel}</td>
           <td style="text-align:right;">${e.trigger.sent.toLocaleString()}</td>
           <td style="text-align:right;">${e.trigger.opportunities}</td>
