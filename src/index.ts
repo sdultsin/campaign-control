@@ -479,7 +479,22 @@ async function executeScheduledRun(env: Env): Promise<void> {
     let totalVariantsWarned = 0;
     let totalVariantsKillsPaused = 0;
     let totalVariantsDeferred = 0;
-    let killBudgetRemaining = MAX_KILLS_PER_RUN > 0 ? MAX_KILLS_PER_RUN : Infinity;
+    const killBudgetPerCm = new Map<string, number>();
+    const getKillBudget = (cm: string | null): number => {
+      const key = cm ?? 'UNKNOWN';
+      if (!killBudgetPerCm.has(key)) {
+        killBudgetPerCm.set(key, MAX_KILLS_PER_RUN > 0 ? MAX_KILLS_PER_RUN : Infinity);
+      }
+      return killBudgetPerCm.get(key)!;
+    };
+    const decrementKillBudget = (cm: string | null): void => {
+      const key = cm ?? 'UNKNOWN';
+      killBudgetPerCm.set(key, getKillBudget(cm) - 1);
+    };
+    const incrementKillBudget = (cm: string | null, amount: number): void => {
+      const key = cm ?? 'UNKNOWN';
+      killBudgetPerCm.set(key, getKillBudget(cm) + amount);
+    };
     let totalErrors = 0;
     let totalRescanChecked = 0;
     let totalRescanReEnabled = 0;
@@ -833,8 +848,8 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     dryRun: isDryRun,
                   };
 
-                  // Kill cap check: defer if we've hit the per-run limit
-                  const killCapReached = killBudgetRemaining <= 0;
+                  // Kill cap check: defer if we've hit the per-CM limit
+                  const killCapReached = getKillBudget(cmName) <= 0;
 
                   if (killCapReached && !isDryRun) {
                     result.deferred++;
@@ -910,7 +925,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                         stepIndex,
                         channelId,
                       });
-                      killBudgetRemaining--;
+                      decrementKillBudget(cmName);
                     } else {
                       console.log(
                         `[auto-turnoff] Kill dedup: already notified for ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — skipping`,
@@ -1348,7 +1363,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     console.error(`[auto-turnoff] Batch kill failed for ${campaign.name}: ${batchErr}`);
                     // No fallback to individual kills (same race condition).
                     // Variants remain enabled and will be re-evaluated next cron run.
-                    killBudgetRemaining += pendingKills.length;
+                    incrementKillBudget(cmName, pendingKills.length);
                     result.errors += pendingKills.length;
                   }
                 }
