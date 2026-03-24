@@ -1528,37 +1528,37 @@ async function executeScheduledRun(env: Env): Promise<void> {
 
               // Only write audit if re-enable succeeded (or dry-run)
               if (reEnableSuccess) {
-              const reEnableAudit: AuditEntry = {
-                timestamp: new Date().toISOString(),
-                action: 'RE_ENABLED',
-                workspace: entry.workspaceName,
-                workspaceId: entry.workspaceId,
-                campaign: entry.campaignName,
-                campaignId: entry.campaignId,
-                step: entry.stepIndex + 1,
-                variant: entry.variantIndex,
-                variantLabel: entry.variantLabel,
-                cm: entry.cmName,
-                product: entry.product,
-                trigger: {
-                  sent: variantRow.sent,
-                  opportunities: variantRow.opportunities,
-                  ratio: variantRow.opportunities === 0
-                    ? 'Infinity'
-                    : (variantRow.sent / variantRow.opportunities).toFixed(1),
-                  threshold: entry.threshold,
-                  rule: `Late opportunities improved ratio below threshold (was ${entry.opportunities} opps, now ${variantRow.opportunities})`,
-                },
-                safety: { survivingVariants: -1, notification: null },
-                dryRun: isDryRun,
-              };
+                const reEnableAudit: AuditEntry = {
+                  timestamp: new Date().toISOString(),
+                  action: 'RE_ENABLED',
+                  workspace: entry.workspaceName,
+                  workspaceId: entry.workspaceId,
+                  campaign: entry.campaignName,
+                  campaignId: entry.campaignId,
+                  step: entry.stepIndex + 1,
+                  variant: entry.variantIndex,
+                  variantLabel: entry.variantLabel,
+                  cm: entry.cmName,
+                  product: entry.product,
+                  trigger: {
+                    sent: variantRow.sent,
+                    opportunities: variantRow.opportunities,
+                    ratio: variantRow.opportunities === 0
+                      ? 'Infinity'
+                      : (variantRow.sent / variantRow.opportunities).toFixed(1),
+                    threshold: entry.threshold,
+                    rule: `Late opportunities improved ratio below threshold (was ${entry.opportunities} opps, now ${variantRow.opportunities})`,
+                  },
+                  safety: { survivingVariants: -1, notification: null },
+                  dryRun: isDryRun,
+                };
 
-              await writeAuditLog(env.KV, reEnableAudit).catch((err) =>
-                console.error(`[auto-turnoff] Failed to write rescan audit log: ${err}`),
-              );
-              if (sb) await writeAuditLogToSupabase(sb, reEnableAudit).catch((err) =>
-                console.error(`[supabase] re_enabled audit write failed: ${err}`),
-              );
+                await writeAuditLog(env.KV, reEnableAudit).catch((err) =>
+                  console.error(`[auto-turnoff] Failed to write rescan audit log: ${err}`),
+                );
+                if (sb) await writeAuditLogToSupabase(sb, reEnableAudit).catch((err) =>
+                  console.error(`[supabase] re_enabled audit write failed: ${err}`),
+                );
               }
             } else {
               // Still failing

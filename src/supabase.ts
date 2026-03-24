@@ -81,6 +81,7 @@ export async function writeRunSummaryToSupabase(
     campaigns_evaluated: summary.campaignsEvaluated,
     variants_disabled: summary.variantsDisabled,
     variants_blocked: summary.variantsBlocked,
+    variants_kills_paused: summary.variantsKillsPaused,
     variants_warned: summary.variantsWarned,
     errors: summary.errors,
     duration_ms: summary.durationMs,
