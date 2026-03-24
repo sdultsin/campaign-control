@@ -68,6 +68,7 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   { id: 'the-dyad', name: 'The Dyad', product: 'FUNDING', defaultCm: 'CARLOS' },
   { id: 'koi-and-destroy', name: 'Koi and Destroy', product: 'FUNDING', defaultCm: 'TOMI' },
   { id: 'outlook-2', name: 'Outlook 2', product: 'FUNDING', defaultCm: 'MARCOS' },
+  { id: 'outlook-3', name: 'Outlook 3', product: 'FUNDING', defaultCm: 'LEO' },
   { id: 'prospects-power', name: 'Prospects Power', product: 'FUNDING', defaultCm: 'SHAAN' },
   { id: 'automated-applications', name: 'Automated applications', product: 'FUNDING', defaultCm: 'EYVER' },
   { id: 'outlook-1', name: 'Outlook 1', product: 'FUNDING', defaultCm: 'IDO' },
@@ -75,7 +76,7 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   { id: 'renaissance-4', name: 'Renaissance 4', product: 'FUNDING', defaultCm: null },
   { id: 'renaissance-5', name: 'Renaissance 5', product: 'FUNDING', defaultCm: null },
   { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null },
-  // Excluded: Renaissance 3, Renaissance 6, Renaissance 7, Outlook 3
+  // Excluded: Renaissance 3, Renaissance 6, Renaissance 7
   // Warming up as of 2026-03-16 (confirmed by Samuel). No CMs assigned, 0 active campaigns.
   // Re-add when they go live.
   // ERC
@@ -98,14 +99,14 @@ export function getWorkspaceConfig(workspaceId: string): WorkspaceConfig | null 
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
-export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'SAMUEL']);
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAMUEL', 'TOMI']);
 
 // ---------------------------------------------------------------------------
 // Per-CM dry run: CMs in this set are evaluated and logged (dashboard populates)
 // but variants are NOT killed and Slack notifications are NOT sent.
 // Remove a CM from this set to go live with kills for them.
 // ---------------------------------------------------------------------------
-export const DRY_RUN_CMS: Set<string> = new Set([]);
+export const DRY_RUN_CMS: Set<string> = new Set(['LEO', 'MARCOS', 'TOMI']);
 
 // CM -> Slack channel for monitor notifications
 export const CM_MONITOR_CHANNELS: Record<string, string> = {
@@ -114,7 +115,10 @@ export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'EYVER': 'C0AN6L2KLLW',    // #cc-eyver
   'IDO': 'C0AMRK842PK',      // #cc-ido
   'LAUTARO': 'C0AMXSTGEF9',  // #cc-lautaro
+  'LEO': 'C0ANK3F1ED8',      // #cc-leo
+  'MARCOS': 'C0ANH1S3K2S',   // #cc-marcos
   'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
+  'TOMI': 'C0ANFLJPS69',     // #cc-tomi
 };
 
 // Max variants to disable per cron run. Remaining candidates are logged as
