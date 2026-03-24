@@ -1,5 +1,5 @@
 import type { StepAnalytics, Step, Decision, SafetyResult, NotificationType, LastVariantWarning } from './types';
-import { LAST_VARIANT_WARNING_PCT, VARIANT_LABELS, OPP_RUNWAY_MULTIPLIER } from './config';
+import { LAST_VARIANT_WARNING_PCT, VARIANT_LABELS, OPP_RUNWAY_MULTIPLIER, WINNER_THRESHOLD_MULTIPLIER, WINNER_MIN_OPPS, WINNER_MIN_SENDS_MULTIPLIER } from './config';
 
 // Evaluate a single variant against the threshold.
 // threshold doubles as both the minimum-sends gate and the sent/opportunities ratio ceiling.
@@ -145,4 +145,36 @@ export function checkVariantWarnings(
   }
 
   return warnings;
+}
+
+export interface WinnerResult {
+  isWinner: boolean;
+  reason: string;
+  ratio?: number;
+  winnerThreshold?: number;
+}
+
+/**
+ * Evaluate a single variant for winner status.
+ * Winner = ratio <= (kill_threshold * 0.66), with guardrails on min sends and min opps.
+ * The threshold parameter is the KILL threshold (already adjusted for OFF campaigns).
+ */
+export function evaluateWinner(
+  sent: number,
+  opportunities: number,
+  killThreshold: number,
+): WinnerResult {
+  const minSends = killThreshold * WINNER_MIN_SENDS_MULTIPLIER;
+  if (sent < minSends) {
+    return { isWinner: false, reason: `Insufficient sends (${sent} < ${Math.round(minSends)})` };
+  }
+  if (opportunities < WINNER_MIN_OPPS) {
+    return { isWinner: false, reason: `Insufficient opportunities (${opportunities} < ${WINNER_MIN_OPPS})` };
+  }
+  const ratio = sent / opportunities;
+  const winnerThreshold = killThreshold * WINNER_THRESHOLD_MULTIPLIER;
+  if (ratio <= winnerThreshold) {
+    return { isWinner: true, reason: `Ratio ${ratio.toFixed(1)}:1 <= winner threshold ${winnerThreshold.toFixed(0)}:1`, ratio, winnerThreshold };
+  }
+  return { isWinner: false, reason: `Ratio ${ratio.toFixed(1)}:1 > winner threshold ${winnerThreshold.toFixed(0)}:1` };
 }

@@ -207,9 +207,27 @@ export interface RescanEntry {
   product: Product;
 }
 
+export interface WinnerEntry {
+  campaignId: string;
+  campaignName: string;
+  workspaceId: string;
+  workspaceName: string;
+  stepIndex: number;
+  variantIndex: number;
+  variantLabel: string;
+  sent: number;
+  opportunities: number;
+  ratio: number;
+  winnerThreshold: number;
+  killThreshold: number;
+  cm: string | null;
+  product: Product;
+  isOff: boolean;
+}
+
 export interface AuditEntry {
   timestamp: string;
-  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE';
+  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED';
   workspace: string;
   workspaceId: string;
   campaign: string;
@@ -255,6 +273,7 @@ export interface RunSummary {
   leadsExhausted: number;
   leadsRecovered: number;
   ghostReEnables: number;
+  winnersDetected: number;
   dryRun: boolean;
 }
 
@@ -346,6 +365,10 @@ export interface CampaignResult {
   killsPaused: number;
   /** Number of errors during processing */
   errors: number;
+  /** Winner entries for this campaign (all qualifying variants, for dashboard) */
+  winners: WinnerEntry[];
+  /** Number of newly detected winners (not previously deduped) */
+  winnersDetected: number;
   /** Leads check candidate for Phase 3 */
   leadsCandidate: LeadsCheckCandidate | null;
   /** Campaign-level snapshot data for daily snapshot aggregation */
@@ -361,8 +384,8 @@ export interface CampaignResult {
 
 // --- Dashboard state types ---
 
-export type DashboardItemType = 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING';
-export type DashboardSeverity = 'CRITICAL' | 'WARNING';
+export type DashboardItemType = 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'WINNING';
+export type DashboardSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 export interface DashboardItem {
   item_type: DashboardItemType;

@@ -95,6 +95,7 @@ export async function writeRunSummaryToSupabase(
     leads_exhausted: summary.leadsExhausted,
     leads_recovered: summary.leadsRecovered,
     ghost_re_enables: summary.ghostReEnables,
+    winners_detected: summary.winnersDetected,
     dry_run: summary.dryRun,
     worker_version: WORKER_VERSION,
   });
@@ -186,7 +187,7 @@ export async function upsertDashboardItem(
   // Must filter by step to match the unique index: (cm, campaign_id, item_type, COALESCE(step, -1))
   let query = sb
     .from('dashboard_items')
-    .select('id, created_at')
+    .select('id, created_at, dismissed_at')
     .eq('cm', item.cm)
     .eq('campaign_id', item.campaign_id)
     .eq('item_type', item.item_type)
@@ -202,6 +203,9 @@ export async function upsertDashboardItem(
   const match = existing?.[0];
 
   if (match) {
+    // WINNING items dismissed by CM should never re-appear (TDD: "Done" = permanent dismiss)
+    if (item.item_type === 'WINNING' && match.dismissed_at) return;
+
     // Update existing: refresh last_scan_at and context
     const { error } = await sb
       .from('dashboard_items')
@@ -296,6 +300,7 @@ export async function getDashboardDigestData(
   criticalCount: number;
   killsSince: number;
   reEnablesSince: number;
+  winnersLast24h: Array<{ campaignName: string; variantLabel: string; ratio: string }>;
 }> {
   const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
@@ -331,10 +336,30 @@ export async function getDashboardDigestData(
     .gte('timestamp', yesterday)
     .not('worker_version', 'is', null);
 
+  // Winners detected in last 24h (for digest top performers line)
+  const { data: winnerRows } = await sb
+    .from('audit_logs')
+    .select('campaign, variant_label, trigger_ratio')
+    .eq('cm', cm)
+    .eq('action', 'WINNER_DETECTED')
+    .gte('timestamp', yesterday)
+    .not('worker_version', 'is', null)
+    .limit(20);
+
+  const winnersLast24h = (winnerRows ?? [])
+    .sort((a, b) => parseFloat(a.trigger_ratio as string) - parseFloat(b.trigger_ratio as string))
+    .slice(0, 10)
+    .map(row => ({
+      campaignName: row.campaign as string,
+      variantLabel: row.variant_label as string,
+      ratio: `${row.trigger_ratio}:1`,
+    }));
+
   return {
     activeCount: activeCount ?? 0,
     criticalCount: criticalCount ?? 0,
     killsSince: killsSince ?? 0,
     reEnablesSince: reEnablesSince ?? 0,
+    winnersLast24h,
   };
 }

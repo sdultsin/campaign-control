@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { AuditEntry, LeadsAuditEntry, DashboardItemType, DashboardSeverity } from './types';
+import type { AuditEntry, LeadsAuditEntry, DashboardItemType, DashboardSeverity, WinnerEntry } from './types';
 import { upsertDashboardItem, resolveStaleItems } from './supabase';
 import { PILOT_CMS } from './config';
 
@@ -35,6 +35,7 @@ export async function buildDashboardState(
   leadsExhausted: LeadsAuditEntry[],
   leadsWarnings: LeadsAuditEntry[],
   dryRunKills: AuditEntry[] = [],
+  winners: WinnerEntry[] = [],
 ): Promise<{ upserted: number; resolved: number }> {
   // Collect all detected issues, keyed by CM
   const issuesByCm = new Map<string, DetectedIssue[]>();
@@ -144,6 +145,31 @@ export async function buildDashboardState(
         uncontacted: entry.leads.active_in_sequence,
         active: entry.leads.active,
         daily_limit: entry.leads.dailyLimit,
+      },
+    });
+  }
+
+  // WINNING -> INFO dashboard items
+  for (const entry of winners) {
+    if (!entry.cm) continue;
+    addIssue({
+      item_type: 'WINNING',
+      severity: 'INFO',
+      cm: entry.cm,
+      campaign_id: entry.campaignId,
+      campaign_name: entry.campaignName,
+      workspace_id: entry.workspaceId,
+      workspace_name: entry.workspaceName,
+      step: entry.stepIndex + 1,
+      variant: entry.variantIndex,
+      variant_label: entry.variantLabel,
+      context: {
+        sent: entry.sent,
+        opportunities: entry.opportunities,
+        ratio: entry.ratio,
+        winner_threshold: entry.winnerThreshold,
+        kill_threshold: entry.killThreshold,
+        is_off: entry.isOff,
       },
     });
   }

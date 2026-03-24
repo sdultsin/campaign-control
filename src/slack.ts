@@ -1,5 +1,5 @@
 import type { KillAction, LastVariantWarning, RescanEntry, LeadsCheckCandidate } from './types';
-import { VARIANT_LABELS, OFF_CAMPAIGN_BUFFER } from './config';
+import { VARIANT_LABELS, OFF_CAMPAIGN_BUFFER, WINNER_THRESHOLD_MULTIPLIER } from './config';
 
 // ---------------------------------------------------------------------------
 // Notification types & grouped titles
@@ -11,7 +11,8 @@ export type SlackNotificationType =
   | 'WARNING'
   | 'RESCAN_RE_ENABLED'
   | 'LEADS_EXHAUSTED'
-  | 'LEADS_WARNING';
+  | 'LEADS_WARNING'
+  | 'WINNER';
 
 const GROUP_TITLES: Record<SlackNotificationType, (count: number) => string> = {
   KILL: (n) => `:rotating_light: Variants Automatically Disabled (${n})`,
@@ -20,6 +21,7 @@ const GROUP_TITLES: Record<SlackNotificationType, (count: number) => string> = {
   RESCAN_RE_ENABLED: (n) => `:white_check_mark: Variants Re-enabled (${n})`,
   LEADS_EXHAUSTED: (n) => `:red_circle: Leads Exhausted (${n} campaign${n === 1 ? '' : 's'})`,
   LEADS_WARNING: (n) => `:warning: Leads Running Low (${n} campaign${n === 1 ? '' : 's'})`,
+  WINNER: (n) => `:trophy: Winning Variants Detected (${n})`,
 };
 
 export interface NotificationMeta {
@@ -343,6 +345,47 @@ Campaign: ${candidate.campaignName}
   return message;
 }
 
+export function formatWinnerDetails(
+  workspaceName: string,
+  campaignName: string,
+  stepIndex: number,
+  variantLabel: string,
+  sent: number,
+  opportunities: number,
+  ratio: number,
+  killThreshold: number,
+  isOff: boolean,
+  leadsNote: string | null,
+): string {
+  const improvement = Math.round(killThreshold / ratio);
+  let message = `Workspace: ${workspaceName}
+Campaign: ${campaignName}
+Step ${stepIndex + 1}, Variant ${variantLabel} - WINNING
+
+Emails sent: ${sent.toLocaleString()}
+Opportunities: ${opportunities}
+Ratio: ${ratio.toFixed(0)}:1 (threshold: ${killThreshold.toLocaleString()}:1 - ${improvement}x better)`;
+
+  if (isOff) {
+    message += formatOffAnnotation(killThreshold);
+  }
+
+  if (leadsNote) {
+    message += `\n\n${leadsNote}`;
+  }
+
+  return message;
+}
+
+export function formatAllVariantsWinning(stepIndex: number): string {
+  return `All variants in Step ${stepIndex + 1} are performing well. Add more leads to this campaign.`;
+}
+
+export function formatCampaignWinnerRollup(campaignName: string, steps: number[]): string {
+  const stepList = steps.map(s => s + 1).join(' and ');
+  return `Campaign ${campaignName} has winning variants in Steps ${stepList}. Strong candidate for increased volume.`;
+}
+
 // ---------------------------------------------------------------------------
 // Morning digest
 // ---------------------------------------------------------------------------
@@ -351,7 +394,7 @@ export async function sendMorningDigest(
   channel: string,
   cm: string,
   dashboardUrl: string,
-  summary: { activeCount: number; criticalCount: number; killsSince: number; reEnablesSince: number },
+  summary: { activeCount: number; criticalCount: number; killsSince: number; reEnablesSince: number; winnersLast24h: Array<{ campaignName: string; variantLabel: string; ratio: string }> },
   token: string,
   isDryRun: boolean,
 ): Promise<void> {
@@ -359,11 +402,20 @@ export async function sendMorningDigest(
     ? `Status: ${summary.criticalCount} campaign${summary.criticalCount === 1 ? '' : 's'} need${summary.criticalCount === 1 ? 's' : ''} attention`
     : 'Status: No critical alerts';
 
+  let winnersLine = '';
+  if (summary.winnersLast24h.length > 0) {
+    const topPerformers = summary.winnersLast24h
+      .slice(0, 5)
+      .map(w => `[${w.campaignName}] Variant ${w.variantLabel} (${w.ratio})`)
+      .join(', ');
+    winnersLine = `\nTop performers (last 24h): ${topPerformers}`;
+  }
+
   const text = `*Campaign Control - Daily Summary*
 
 Action items: ${summary.activeCount}
 Since yesterday: ${summary.killsSince} variant${summary.killsSince === 1 ? '' : 's'} turned off, ${summary.reEnablesSince} re-enabled
-${statusLine}
+${statusLine}${winnersLine}
 
 <${dashboardUrl}|View Dashboard>`;
 

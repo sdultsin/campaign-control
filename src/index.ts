@@ -1,13 +1,14 @@
 import { McpClient } from './mcp-client';
 import { InstantlyApi } from './instantly';
 import { InstantlyDirectApi } from './instantly-direct';
-import { evaluateStep, evaluateVariant, checkVariantWarnings } from './evaluator';
+import { evaluateStep, evaluateVariant, checkVariantWarnings, evaluateWinner } from './evaluator';
 import { resolveChannel, resolveCmName, isPilotCampaign, isPilotWorkspace } from './router';
 import {
   NotificationCollector,
   formatKillDetails, formatLastVariantDetails,
   formatWarningDetails, formatRescanDetails,
   formatLeadsWarningDetails, formatLeadsExhaustedDetails,
+  formatWinnerDetails, formatAllVariantsWinning, formatCampaignWinnerRollup,
   sendMorningDigest,
 } from './slack';
 import type { NotificationMeta } from './slack';
@@ -42,7 +43,7 @@ import type {
   Env, KillAction, CampaignDetail, StepAnalytics, AuditEntry, RunSummary, RescanEntry,
   DailySnapshot, BaselineSnapshot, WorkspaceSnapshot, CmSnapshot, CampaignHealthEntry,
   LeadsCheckCandidate, LeadsWarningEntry, LeadsExhaustedEntry, LeadsAuditEntry,
-  CampaignResult,
+  CampaignResult, WinnerEntry,
 } from './types';
 
 import { evaluateLeadDepletion } from './leads-monitor';
@@ -488,6 +489,10 @@ async function executeScheduledRun(env: Env): Promise<void> {
     let totalLeadsExhausted = 0;
     let totalLeadsRecovered = 0;
 
+    // Winner detection
+    let totalWinnersDetected = 0;
+    const dashboardWinners: WinnerEntry[] = [];
+
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
 
@@ -594,6 +599,8 @@ async function executeScheduledRun(env: Env): Promise<void> {
               deferred: 0,
               killsPaused: 0,
               errors: 0,
+              winners: [],
+              winnersDetected: 0,
               leadsCandidate: null,
               snapshot: null,
             };
@@ -1078,6 +1085,136 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     }
                   }
                 }
+
+                // --- WINNER DETECTION ---
+                // Evaluate active variants that are NOT kill candidates for winner status.
+                // Uses the same analytics and threshold already resolved — zero extra API calls.
+                for (let vi = 0; vi < stepDetail.variants.length; vi++) {
+                  if (stepDetail.variants[vi].v_disabled) continue;
+                  // Skip variants that are kill candidates or already killed
+                  if (kills.some(k => k.variantIndex === vi)) continue;
+                  if (blocked && blocked.variantIndex === vi) continue;
+
+                  const variantAnalytics = stepAnalytics.find(
+                    (a) => parseInt(a.variant, 10) === vi,
+                  );
+                  if (!variantAnalytics) continue;
+
+                  const winnerResult = evaluateWinner(variantAnalytics.sent, variantAnalytics.opportunities, threshold);
+                  if (!winnerResult.isWinner) continue;
+
+                  // Permanent dedup: check KV flag (no TTL)
+                  const winnerDedupKey = `winner:notified:${campaign.id}:${stepIndex}:${vi}`;
+                  const alreadyNotified = await env.KV.get(winnerDedupKey);
+
+                  const variantLabel = VARIANT_LABELS[vi] ?? String(vi);
+                  const winnerEntry: WinnerEntry = {
+                    campaignId: campaign.id,
+                    campaignName: campaign.name,
+                    workspaceId: workspace.id,
+                    workspaceName: workspace.name,
+                    stepIndex,
+                    variantIndex: vi,
+                    variantLabel,
+                    sent: variantAnalytics.sent,
+                    opportunities: variantAnalytics.opportunities,
+                    ratio: winnerResult.ratio!,
+                    winnerThreshold: winnerResult.winnerThreshold!,
+                    killThreshold: threshold,
+                    cm: cmName,
+                    product: wsConfig.product,
+                    isOff: isOffCampaign(campaign.name),
+                  };
+
+                  // Collect on result (tally loop pushes to dashboardWinners)
+                  result.winners.push(winnerEntry);
+
+                  if (!alreadyNotified) {
+                    result.winnersDetected++;
+
+                    // Check for leads-exhausted cross-reference
+                    let leadsNote: string | null = null;
+                    const leadsExhKey = `leads-exhausted:${campaign.id}`;
+                    const leadsWarnKey = `leads-warning:${campaign.id}`;
+                    const hasLeadsExhausted = await env.KV.get(leadsExhKey);
+                    const hasLeadsWarning = await env.KV.get(leadsWarnKey);
+                    if (hasLeadsExhausted || hasLeadsWarning) {
+                      leadsNote = 'Note: This campaign is low on leads. Add more leads - this is a well-performing campaign.';
+                    }
+
+                    // Write audit log
+                    const winnerAudit: AuditEntry = {
+                      timestamp: new Date().toISOString(),
+                      action: 'WINNER_DETECTED',
+                      workspace: workspace.name,
+                      workspaceId: workspace.id,
+                      campaign: campaign.name,
+                      campaignId: campaign.id,
+                      step: stepIndex + 1,
+                      variant: vi,
+                      variantLabel,
+                      cm: cmName,
+                      product: wsConfig.product,
+                      trigger: {
+                        sent: variantAnalytics.sent,
+                        opportunities: variantAnalytics.opportunities,
+                        ratio: winnerResult.ratio!.toFixed(1),
+                        threshold,
+                        effective_threshold: winnerResult.winnerThreshold!,
+                        rule: `Winner: ratio ${winnerResult.ratio!.toFixed(1)}:1 <= winner threshold ${winnerResult.winnerThreshold!.toFixed(0)}:1`,
+                      },
+                      safety: { survivingVariants: -1, notification: null },
+                      dryRun: isDryRun,
+                    };
+
+                    await writeAuditLog(env.KV, winnerAudit).catch((err) =>
+                      console.error(`[auto-turnoff] Failed to write winner audit log: ${err}`),
+                    );
+                    if (sb) await writeAuditLogToSupabase(sb, winnerAudit).catch((err) =>
+                      console.error(`[supabase] winner audit write failed: ${err}`),
+                    );
+
+                    // Collect Slack notification
+                    if (!isDryRun) {
+                      collector.add(channelId, 'WINNER', formatWinnerDetails(
+                        workspace.name,
+                        campaign.name,
+                        stepIndex,
+                        variantLabel,
+                        variantAnalytics.sent,
+                        variantAnalytics.opportunities,
+                        winnerResult.ratio!,
+                        threshold,
+                        isOffCampaign(campaign.name),
+                        leadsNote,
+                      ), {
+                        timestamp: new Date().toISOString(),
+                        notification_type: 'WINNER',
+                        campaign_id: campaign.id,
+                        campaign_name: campaign.name,
+                        workspace_id: workspace.id,
+                        workspace_name: workspace.name,
+                        cm: cmName,
+                        step: stepIndex + 1,
+                        variant: vi,
+                        variant_label: variantLabel,
+                        dry_run: isDryRun,
+                      });
+
+                      // Set permanent dedup flag (no TTL = forever) — only when NOT dry run
+                      await env.KV.put(winnerDedupKey, JSON.stringify({
+                        campaignId: campaign.id,
+                        stepIndex,
+                        variantIndex: vi,
+                        detectedAt: new Date().toISOString(),
+                      })).catch(() => {});
+                    } else {
+                      console.log(
+                        `[DRY RUN] WINNER: ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${variantLabel} — ratio=${winnerResult.ratio!.toFixed(1)} threshold=${winnerResult.winnerThreshold!.toFixed(0)}`,
+                      );
+                    }
+                  }
+                }
               }
 
               // --- BATCH KILL EXECUTION ---
@@ -1229,6 +1366,8 @@ async function executeScheduledRun(env: Env): Promise<void> {
             totalErrors += r.errors;
             dashboardBlocked.push(...r.blocked);
             dashboardDryRunKills.push(...r.dryRunKills);
+            dashboardWinners.push(...r.winners);
+            totalWinnersDetected += r.winnersDetected;
             if (r.leadsCandidate) leadsCheckCandidates.push(r.leadsCandidate);
 
             if (r.snapshot) {
@@ -1284,6 +1423,65 @@ async function executeScheduledRun(env: Env): Promise<void> {
           );
           totalErrors++;
         }
+      }
+
+      // --- WINNER ROLL-UPS ---
+      try {
+        if (totalWinnersDetected > 0 && !isDryRun) {
+          // All-variants-winning per step (3+ winners in same step)
+          const byStep = new Map<string, WinnerEntry[]>();
+          for (const w of dashboardWinners) {
+            const key = `${w.campaignId}:${w.stepIndex}`;
+            if (!byStep.has(key)) byStep.set(key, []);
+            byStep.get(key)!.push(w);
+          }
+          for (const [_key, winners] of byStep) {
+            if (winners.length >= 3) {
+              const rollupChannelId = resolveChannel(winners[0].cm, env.SLACK_FALLBACK_CHANNEL);
+              collector.add(rollupChannelId, 'WINNER', formatAllVariantsWinning(winners[0].stepIndex), {
+                timestamp: new Date().toISOString(),
+                notification_type: 'WINNER',
+                campaign_id: winners[0].campaignId,
+                campaign_name: winners[0].campaignName,
+                workspace_id: winners[0].workspaceId,
+                workspace_name: winners[0].workspaceName,
+                cm: winners[0].cm,
+                step: winners[0].stepIndex + 1,
+                variant: null,
+                variant_label: null,
+                dry_run: isDryRun,
+              });
+            }
+          }
+
+          // Campaign-level winner roll-up (2+ steps with winners in same campaign)
+          const byCampaign = new Map<string, Set<number>>();
+          for (const w of dashboardWinners) {
+            if (!byCampaign.has(w.campaignId)) byCampaign.set(w.campaignId, new Set());
+            byCampaign.get(w.campaignId)!.add(w.stepIndex);
+          }
+          for (const [campaignId, steps] of byCampaign) {
+            if (steps.size >= 2) {
+              const firstWinner = dashboardWinners.find(w => w.campaignId === campaignId)!;
+              const rollupChannelId = resolveChannel(firstWinner.cm, env.SLACK_FALLBACK_CHANNEL);
+              collector.add(rollupChannelId, 'WINNER', formatCampaignWinnerRollup(firstWinner.campaignName, Array.from(steps)), {
+                timestamp: new Date().toISOString(),
+                notification_type: 'WINNER',
+                campaign_id: campaignId,
+                campaign_name: firstWinner.campaignName,
+                workspace_id: firstWinner.workspaceId,
+                workspace_name: firstWinner.workspaceName,
+                cm: firstWinner.cm,
+                step: null,
+                variant: null,
+                variant_label: null,
+                dry_run: isDryRun,
+              });
+            }
+          }
+        }
+      } catch (rollupErr) {
+        console.error(`[auto-turnoff] Winner roll-up error: ${rollupErr}`);
       }
 
       // 5. PHASE 2: RESCAN DISABLED VARIANTS FOR LATE-ARRIVING OPPORTUNITIES
@@ -2091,6 +2289,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
             dashboardLeadsExhausted,
             dashboardLeadsWarnings,
             dashboardDryRunKills,
+            dashboardWinners,
           );
           console.log(`[auto-turnoff] Dashboard state: ${dashResult.upserted} upserted, ${dashResult.resolved} resolved`);
         } catch (dashErr) {
@@ -2166,7 +2365,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
       // 7. LOG RUN SUMMARY
       const durationMs = Date.now() - runStart;
       console.log(
-        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
+        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} winners=${totalWinnersDetected} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
       );
 
       // 8. WRITE RUN SUMMARY TO KV
@@ -2190,6 +2389,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
         leadsExhausted: totalLeadsExhausted,
         leadsRecovered: totalLeadsRecovered,
         ghostReEnables: ghostCount,
+        winnersDetected: totalWinnersDetected,
         dryRun: isDryRun,
       };
 
