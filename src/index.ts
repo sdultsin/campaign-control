@@ -357,7 +357,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/__scheduled') {
-      const runPromise = executeScheduledRun(env);
+      const runPromise = executeScheduledRun(env, { skipAudit: true });
       ctx.waitUntil(runPromise);
       await runPromise;
       return new Response('Scheduled run complete. Check console logs for output.');
@@ -424,7 +424,7 @@ async function executeMorningDigest(env: Env): Promise<void> {
 // Extracted scheduled run body
 // ---------------------------------------------------------------------------
 
-async function executeScheduledRun(env: Env): Promise<void> {
+async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }): Promise<void> {
     const runStart = Date.now();
 
     // --- Env var validation ---
@@ -2494,8 +2494,8 @@ async function executeScheduledRun(env: Env): Promise<void> {
         console.error(`[supabase] run summary write failed: ${err}`),
       );
 
-      // PHASE 7: SELF-AUDIT
-      if (sb) {
+      // PHASE 7: SELF-AUDIT (cron only, skipped on manual triggers)
+      if (sb && !options?.skipAudit) {
         console.log(JSON.stringify({ event: 'phase_start', phase: 'self_audit', elapsedMs: Date.now() - runStart }));
         try {
           await runSelfAudit(
