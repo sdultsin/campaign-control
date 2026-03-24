@@ -95,6 +95,7 @@ export async function writeRunSummaryToSupabase(
     leads_exhausted: summary.leadsExhausted,
     leads_recovered: summary.leadsRecovered,
     ghost_re_enables: summary.ghostReEnables,
+    ghost_details: summary.ghostDetails ?? null,
     winners_detected: summary.winnersDetected,
     dry_run: summary.dryRun,
     worker_version: WORKER_VERSION,

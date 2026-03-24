@@ -9,7 +9,7 @@ import {
   formatWarningDetails, formatRescanDetails,
   formatLeadsWarningDetails, formatLeadsExhaustedDetails,
   formatWinnerDetails, formatAllVariantsWinning, formatCampaignWinnerRollup,
-  sendMorningDigest,
+  sendMorningDigest, postThreadedMessage,
 } from './slack';
 import type { NotificationMeta } from './slack';
 import {
@@ -35,6 +35,8 @@ import {
   OPP_RUNWAY_MULTIPLIER,
   DRY_RUN_CMS,
   MAX_PERSISTENCE_CHECKS,
+  EXEMPT_TTL_SECONDS,
+  GHOST_NOTIFIED_TTL_SECONDS,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -43,7 +45,7 @@ import type {
   Env, KillAction, CampaignDetail, StepAnalytics, AuditEntry, RunSummary, RescanEntry,
   DailySnapshot, BaselineSnapshot, WorkspaceSnapshot, CmSnapshot, CampaignHealthEntry,
   LeadsCheckCandidate, LeadsWarningEntry, LeadsExhaustedEntry, LeadsAuditEntry,
-  CampaignResult, WinnerEntry,
+  CampaignResult, WinnerEntry, GhostDetail,
 } from './types';
 
 import { evaluateLeadDepletion } from './leads-monitor';
@@ -892,7 +894,15 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     const killDedupKey = `kill:${campaign.id}:${stepIndex}:${kill.variantIndex}`;
                     const alreadyKilled = await env.KV.get(killDedupKey);
 
-                    if (!alreadyKilled) {
+                    // Exempt check: CM re-enabled a killed variant; CC will not re-kill it
+                    const exemptKey = `exempt:${campaign.id}:${stepIndex}:${kill.variantIndex}`;
+                    const exempt = await env.KV.get(exemptKey);
+
+                    if (exempt) {
+                      console.log(
+                        `[auto-turnoff] Exempt: ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — CM re-enabled after kill, skipping`,
+                      );
+                    } else if (!alreadyKilled) {
                       pendingKills.push({
                         kill: killAction,
                         auditEntry,
@@ -2147,6 +2157,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
       console.log(JSON.stringify({ event: 'phase_start', phase: 'persistence', elapsedMs: Date.now() - runStart }));
       let ghostCount = 0;
       let persistenceChecks = 0;
+      const ghostDetails: GhostDetail[] = [];
 
       try {
         // 1. List all kill dedup keys from KV (paginated)
@@ -2228,14 +2239,28 @@ async function executeScheduledRun(env: Env): Promise<void> {
                 // GHOST RE-ENABLE DETECTED
                 ghostCount++;
                 const variantLabel = VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex);
+                const detectedAt = new Date().toISOString();
 
                 console.warn(
                   `[auto-turnoff] GHOST RE-ENABLE: ${campaignName} Step ${kill.stepIndex + 1} ` +
                   `Variant ${variantLabel} was disabled at ${kill.killedAt} but is now enabled`
                 );
 
+                // Collect ghost detail for run summary
+                ghostDetails.push({
+                  workspace: workspaceName,
+                  campaign: campaignName,
+                  campaignId,
+                  step: kill.stepIndex + 1,
+                  variant: kill.variantIndex,
+                  variantLabel,
+                  cm: cmName,
+                  killedAt: kill.killedAt,
+                  detectedAt,
+                });
+
                 const ghostAudit: AuditEntry = {
-                  timestamp: new Date().toISOString(),
+                  timestamp: detectedAt,
                   action: 'GHOST_REENABLE',
                   workspace: workspaceName,
                   workspaceId,
@@ -2251,7 +2276,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
                     opportunities: 0,
                     ratio: '0',
                     threshold: 0,
-                    rule: `Ghost re-enable: disabled at ${kill.killedAt}, found enabled at ${new Date().toISOString()}`,
+                    rule: `Ghost re-enable: disabled at ${kill.killedAt}, found enabled at ${detectedAt}`,
                   },
                   safety: {
                     survivingVariants: -1,
@@ -2260,8 +2285,57 @@ async function executeScheduledRun(env: Env): Promise<void> {
                   dryRun: isDryRun,
                 };
 
-                await writeAuditLog(env.KV, ghostAudit).catch(() => {});
-                if (sb) await writeAuditLogToSupabase(sb, ghostAudit).catch(() => {});
+                // Change 1: verbose error logging on audit writes (replaces silent .catch(() => {}))
+                await writeAuditLog(env.KV, ghostAudit).catch((err) =>
+                  console.error(`[ghost] KV audit write failed for ${campaignId} step ${kill.stepIndex} var ${kill.variantIndex}: ${err}`)
+                );
+                if (sb) await writeAuditLogToSupabase(sb, ghostAudit).catch((err) =>
+                  console.error(`[ghost] Supabase audit write failed for ${campaignId} step ${kill.stepIndex} var ${kill.variantIndex}: ${err}`)
+                );
+
+                // Change 3: Write exempt key so CC never re-kills this variant
+                const exemptKey = `exempt:${campaignId}:${kill.stepIndex}:${kill.variantIndex}`;
+                await env.KV.put(exemptKey, JSON.stringify({
+                  timestamp: detectedAt,
+                  cm: cmName,
+                  originalKillDate: kill.killedAt,
+                }), { expirationTtl: EXEMPT_TTL_SECONDS }).catch((err) =>
+                  console.error(`[ghost] Failed to write exempt key for ${campaignId} step ${kill.stepIndex} var ${kill.variantIndex}: ${err}`)
+                );
+
+                // Change 4: Slack notification (deduped, fires regardless of DRY_RUN / KILLS_ENABLED)
+                const ghostNotifiedKey = `ghost-notified:${campaignId}:${kill.stepIndex + 1}:${kill.variantIndex}`;
+                const alreadyNotified = await env.KV.get(ghostNotifiedKey);
+                if (!alreadyNotified) {
+                  const killedDate = kill.killedAt ? kill.killedAt.slice(0, 10) : 'unknown date';
+                  const ghostMsg =
+                    `:ghost: Ghost re-enable detected: *${campaignName}* Step ${kill.stepIndex + 1} Variant ${variantLabel} ` +
+                    `was killed on ${killedDate} but has been re-enabled. CC will not re-disable this variant.`;
+
+                  if (isDryRun) {
+                    console.log(`[ghost] [DRY RUN] Ghost Slack notification: ${ghostMsg}`);
+                  }
+
+                  const cmChannel = cmName ? CM_MONITOR_CHANNELS[cmName] : null;
+                  if (cmChannel) {
+                    await postThreadedMessage(
+                      cmChannel,
+                      `:ghost: Ghost Re-Enable Detected`,
+                      ghostMsg,
+                      env.SLACK_BOT_TOKEN,
+                    ).catch((err) =>
+                      console.error(`[ghost] Slack notification failed for ${campaignId} step ${kill.stepIndex + 1} var ${kill.variantIndex}: ${err}`)
+                    );
+                  } else {
+                    console.warn(`[ghost] No CM channel found for ${cmName ?? 'unknown CM'}, ghost notification skipped for ${campaignName} step ${kill.stepIndex + 1} var ${variantLabel}`);
+                  }
+
+                  await env.KV.put(ghostNotifiedKey, '1', { expirationTtl: GHOST_NOTIFIED_TTL_SECONDS }).catch((err) =>
+                    console.error(`[ghost] Failed to write ghost-notified dedup key: ${err}`)
+                  );
+                } else {
+                  console.log(`[ghost] Slack notification already sent for ${campaignName} step ${kill.stepIndex + 1} var ${variantLabel}, skipping`);
+                }
 
                 // Clean up the kill dedup key since the variant is no longer disabled
                 await env.KV.delete(kill.key).catch(() => {});
@@ -2392,6 +2466,7 @@ async function executeScheduledRun(env: Env): Promise<void> {
         leadsExhausted: totalLeadsExhausted,
         leadsRecovered: totalLeadsRecovered,
         ghostReEnables: ghostCount,
+        ghostDetails: ghostDetails.length > 0 ? ghostDetails : null,
         winnersDetected: totalWinnersDetected,
         dryRun: isDryRun,
       };

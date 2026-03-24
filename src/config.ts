@@ -140,6 +140,12 @@ export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
 // Kill persistence monitor: max KV keys to check per run
 export const MAX_PERSISTENCE_CHECKS = 100;
 
+// Ghost exemption: TTL for exempt keys (90 days). Prevents CC from re-killing a CM-re-enabled variant.
+export const EXEMPT_TTL_SECONDS = 7776000; // 90 days
+
+// Ghost Slack notification dedup TTL (90 days). Fires once per ghost.
+export const GHOST_NOTIFIED_TTL_SECONDS = 7776000; // 90 days
+
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
 export const CRON_HOURS_UTC = [10, 16, 22]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.

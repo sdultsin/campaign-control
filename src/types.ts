@@ -253,6 +253,18 @@ export interface AuditEntry {
   dryRun: boolean;
 }
 
+export interface GhostDetail {
+  workspace: string;
+  campaign: string;
+  campaignId: string;
+  step: number;
+  variant: number;
+  variantLabel: string;
+  cm: string | null;
+  killedAt: string;
+  detectedAt: string;
+}
+
 export interface RunSummary {
   timestamp: string;
   workspacesProcessed: number;
@@ -273,6 +285,7 @@ export interface RunSummary {
   leadsExhausted: number;
   leadsRecovered: number;
   ghostReEnables: number;
+  ghostDetails: GhostDetail[] | null;
   winnersDetected: number;
   dryRun: boolean;
 }
