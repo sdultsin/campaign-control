@@ -88,9 +88,20 @@
 **Classification:** EXPECTED_BEHAVIOR
 
 ### Workspace Count Fluctuation
-**Pattern:** workspaces_processed varies by 1-2 between runs.
-**Why it's noise:** Some workspaces may have zero active campaigns in a given run and get skipped. API timeouts on one workspace don't affect others. The worker processes only WORKSPACE_CONFIGS entries that have valid API keys.
-**Classification:** NOISE (unless workspace is consistently missing for 3+ runs - then investigate API key validity)
+**Pattern:** workspaces_processed varies by 1-2 between runs, or consistently shows 17/18.
+**Why it's noise:** The worker processes only WORKSPACE_CONFIGS entries that have valid API keys in the INSTANTLY_API_KEYS secret. If a workspace key is missing, that workspace is filtered out at listWorkspaces() (instantly-direct.ts:104-109). 17/18 is expected when one workspace has no API key available. API timeouts on one workspace don't affect others.
+**Classification:** NOISE
+
+### Slack Suppression False Positives
+**Pattern:** slack_delivery check reports 10-17 failed notifications per run. All have reply_success = false.
+**Why it's noise:** Since c6a99c7 (CM Supervision Console deploy), per-item Slack notifications are intentionally suppressed. index.ts passes skipSlack = true. Notifications still write to Supabase with reply_success = false but never call the Slack API. The slack_delivery self-audit check (self-audit.ts:441) counts all reply_success = false rows without distinguishing intentional suppression from real failures.
+**Classification:** EXPECTED_BEHAVIOR
+
+### KV API Auth Errors
+**Pattern:** Layer 2 investigation reports KV API authentication failure (error 10000) or similar Cloudflare REST API errors when inspecting KV state.
+**Why it's noise:** Layer 2 is Supabase-only by design. All KV state is available in the kv_summary field of audit_results. Layer 2 should NEVER call the Cloudflare KV REST API directly. If this error appears, Layer 2 violated its own rules - the data it needs is already in Supabase.
+**Classification:** NOISE
+**Slack note:** "L2 attempted direct KV API call - not needed, kv_summary in audit_results has the data."
 
 ### Digest-Only Run
 **Pattern:** run_summaries row with campaigns_evaluated = 0 at 12:00 UTC (8am ET).
