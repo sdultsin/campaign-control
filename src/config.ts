@@ -150,6 +150,11 @@ export const EXEMPT_TTL_SECONDS = 7776000; // 90 days
 // Ghost Slack notification dedup TTL (90 days). Fires once per ghost.
 export const GHOST_NOTIFIED_TTL_SECONDS = 7776000; // 90 days
 
+// Per-item Slack notifications are intentionally suppressed (CM Supervision Console).
+// When true, checkSlackDelivery() returns PASS instead of flagging reply_success=false rows.
+// Flip to false when per-item Slack is re-enabled.
+export const SLACK_SUPPRESSED = true;
+
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
 export const CRON_HOURS_UTC = [10, 16, 22]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.

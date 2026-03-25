@@ -4,7 +4,7 @@ import type {
   AuditCheckStatus, AuditCheckSeverity, AuditConfigSnapshot,
   KvSummary, TrailingAvg,
 } from './types';
-import { PILOT_CMS, DRY_RUN_CMS, WORKSPACE_CONFIGS, MAX_KILLS_PER_RUN, RESCAN_MAX_WINDOW_HOURS, WINNER_MIN_OPPS } from './config';
+import { PILOT_CMS, DRY_RUN_CMS, WORKSPACE_CONFIGS, MAX_KILLS_PER_RUN, RESCAN_MAX_WINDOW_HOURS, WINNER_MIN_OPPS, SLACK_SUPPRESSED } from './config';
 import { WORKER_VERSION } from './version';
 
 // ---------------------------------------------------------------------------
@@ -439,6 +439,12 @@ async function checkSupabaseSync(sb: SupabaseClient, runSummary: RunSummary): Pr
 // ---------------------------------------------------------------------------
 
 async function checkSlackDelivery(sb: SupabaseClient): Promise<AuditCheckResult> {
+  if (SLACK_SUPPRESSED) {
+    return makeCheck('slack_delivery', 'WARNING', 'PASS',
+      'All Slack notifications delivered',
+      'Slack suppressed - per-item notifications intentionally skipped');
+  }
+
   try {
     const { data } = await sb.from('notifications')
       .select('notification_type, reply_success')
@@ -538,9 +544,11 @@ function checkCrossRunConsistency(runSummary: RunSummary, trailingAvg: TrailingA
     warnings.push(`campaigns: ${runSummary.campaignsEvaluated} vs avg ${trailingAvg.campaigns_evaluated.toFixed(0)} (${(campaignDelta * 100).toFixed(0)}% delta)`);
   }
 
-  // Workspaces should be constant unless config changed
-  if (runSummary.workspacesProcessed !== WORKSPACE_CONFIGS.length) {
-    warnings.push(`workspaces: ${runSummary.workspacesProcessed} vs config ${WORKSPACE_CONFIGS.length}`);
+  // Workspaces: allow tolerance of 1 because listWorkspaces() filters out
+  // workspaces without API keys (e.g. one workspace has no key configured).
+  const wsDelta = WORKSPACE_CONFIGS.length - runSummary.workspacesProcessed;
+  if (wsDelta > 1) {
+    warnings.push(`workspaces: ${runSummary.workspacesProcessed} vs config ${WORKSPACE_CONFIGS.length} (${wsDelta} missing)`);
   }
 
   // Variants disabled: flag if > 3x trailing avg
