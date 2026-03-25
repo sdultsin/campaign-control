@@ -1,0 +1,126 @@
+# CC Layer 2 Audit - Reference Document
+**[2026-03-24]** This file is the authoritative reference for the Campaign Control Layer 2 audit system. It contains the Bug Class Registry, Known Noise Patterns, and the Classification Decision Tree used by the Layer 2 audit agent to triage findings.
+
+---
+
+# Section 1: Bug Class Registry
+
+### 1. Dashboard Write Gap (c90bbb5 -> 2c3a98b)
+- **Symptoms:** audit_logs had DISABLED entries but dashboard_items didn't have matching rows for real (non-dry-run) kills
+- **Root cause:** In `index.ts`, real kills were being executed but only `dryRunKills` array was passed to `buildDashboardState()`. The `dryRunKills` array was populated for dry-run CMs only. Real kills (DRY_RUN_CMS empty set) were never added to this array, so the dashboard write that depended on it was skipped entirely.
+- **Investigation path:** Compare audit_logs (action=DISABLED, dry_run=false) against dashboard_items (item_type=DISABLED) for same campaign_id + step + variant. Missing dashboard rows = write gap. Query: `SELECT al.campaign_id, al.step, al.variant FROM audit_logs al LEFT JOIN dashboard_items di ON al.campaign_id = di.campaign_id AND al.step = di.step AND al.variant = di.variant AND di.item_type = 'DISABLED' AND di.resolved_at IS NULL WHERE al.action = 'DISABLED' AND al.dry_run = false AND di.id IS NULL`
+- **Files involved:** `src/index.ts` (buildDashboardState call, ~line 1400), `src/dashboard-state.ts` (buildDashboardState function, dryRunKills parameter)
+- **How it was detected:** Manual audit of 6am run comparing audit_log kill count vs dashboard_items DISABLED count
+
+### 2. Variant Dedup Failure (c90bbb5 -> 248cba1, deployed in 2c3a98b)
+- **Symptoms:** Multiple dashboard_items for same campaign/step with different variants were colliding. When 2+ variants in the same step were both winners, only one row was stored. Second variant's context data overwrote the first, but variant and variant_label fields were not updated. Row showed first variant's label with last variant's numbers.
+- **Root cause:** Three layers enforced one-row-per-step without considering variant: (1) Unique index on dashboard_items: `(cm, campaign_id, item_type, COALESCE(step, -1))` - no variant column (2) Upsert match in `supabase.ts` `upsertDashboardItem()`: queried by (cm, campaign_id, item_type, step) - no variant filter (3) Active keys in `dashboard-state.ts` `addIssue()`: key format was `${campaign_id}:${item_type}:${step}` - no variant (4) Resolve keys in `supabase.ts` `resolveStaleItems()`: same key format - no variant
+- **Investigation path:** Query dashboard_items: `SELECT cm, campaign_id, item_type, step, COUNT(*) FROM dashboard_items WHERE resolved_at IS NULL GROUP BY cm, campaign_id, item_type, step HAVING COUNT(*) > 1`. Also check if any WINNING rows have variant_label that doesn't match the context data.
+- **Files involved:** `src/supabase.ts` (upsertDashboardItem upsert match ~line 188-210, resolveStaleItems key ~line 266), `src/dashboard-state.ts` (addIssue active key ~line 49-51)
+- **How it was detected:** Manual audit found Construction 2 - Outlook Step 1 showed "Var A" label with Var B's opportunity count
+
+### 3. Ghost Write Failure (2c3a98b -> d7a5055)
+- **Symptoms:** run_summaries.ghost_re_enables > 0 but zero GHOST_REENABLE rows in audit_logs. ghost_details column was null. Exempt KV keys were not written.
+- **Root cause:** In `index.ts` (~line 2263-2264), the ghost detection phase had `.catch(() => {})` on both KV and Supabase writes, silently swallowing all errors. The actual error was likely a schema mismatch or null reference in the ghostAudit object being passed to `writeAuditLogToSupabase`. Additionally, the run_summaries table lacked a `ghost_details` column, and no ghost detail collection existed in the code.
+- **Investigation path:** Check run_summaries: `SELECT ghost_re_enables, ghost_details FROM run_summaries WHERE ghost_re_enables > 0 AND worker_version = 'v2' ORDER BY timestamp DESC`. If ghost_details IS NULL when ghost_re_enables > 0, the write failure persists. Also check KV for exempt keys: `exempt:<campaignId>:<step>:<variant>`.
+- **Files involved:** `src/index.ts` (ghost detection phase ~line 2250-2270), `src/supabase.ts` (writeRunSummaryToSupabase - ghost_details field)
+- **How it was detected:** 6am run audit showed 3 ghost re-enables in run_summary but no audit trail
+
+### 4. API URL Regression (87d06fa -> 0d78ca0)
+- **Symptoms:** 62/62 errors on getCampaignAnalytics. All campaign evaluations failed. errors array in run_summaries filled with HTTP error messages.
+- **Root cause:** Instantly API v2 changed from path params to query params for campaign analytics endpoint. The old code used `/campaigns/{id}/analytics` but v2 expects `/campaigns/analytics?campaign_id={id}`.
+- **Investigation path:** Check run_summaries errors array: `SELECT errors FROM run_summaries WHERE worker_version = 'v2' ORDER BY timestamp DESC LIMIT 5`. Parse error messages for HTTP status codes (400/404) and endpoint URLs. Consistent failure across all campaigns indicates an API contract change.
+- **Files involved:** `src/instantly-direct.ts` (getStepAnalytics, getCampaignAnalytics methods - uses `/campaigns/analytics` with query params)
+- **How it was detected:** Run summary showed 100% error rate across all campaigns
+
+### 5. Kill Cap Breach (pre-1802bf2)
+- **Symptoms:** More than MAX_KILLS_PER_RUN (10) variants disabled in a single run
+- **Root cause:** Kill counter was tracked globally across all workspaces and CMs. When multiple CMs had kill candidates in the same run, the total could exceed the per-run cap even though the intent was to limit blast radius. The fix was to enforce the cap as a hard global limit: once 10 kills are reached, remaining candidates are logged as DEFERRED.
+- **Investigation path:** Count DISABLED audit_log entries per run: `SELECT DATE_TRUNC('hour', timestamp) as run, COUNT(*) as kills FROM audit_logs WHERE action = 'DISABLED' AND worker_version = 'v2' GROUP BY 1 HAVING COUNT(*) > 10`. Compare against MAX_KILLS_PER_RUN (currently 10 in config.ts).
+- **Files involved:** `src/index.ts` (kill budget logic, killBudgetRemaining counter), `src/config.ts` (MAX_KILLS_PER_RUN = 10)
+- **How it was detected:** Post-run audit found more kills than the configured cap
+
+### 6. Lead Count Accumulator (pre-1802bf2)
+- **Symptoms:** contacted_count in leads checks was wildly high compared to Instantly UI. Leads monitoring fired false LEADS_EXHAUSTED and LEADS_WARNING alerts.
+- **Root cause:** The Instantly API field `contacted_count` is a lifetime accumulator - it includes all leads that have ever been contacted (including bounced, completed, and unsubscribed). It is NOT the current active-in-sequence count. Using it as "how many leads have been sent to" dramatically inflated the denominator, making campaigns appear to have far more sent leads than they actually had active.
+- **Investigation path:** If leads_check_errors spike or leads numbers seem inflated, compare the API's `contacted_count` against `active` (currently in sequence). The leads monitor now uses `leads_count`, `contacted_count`, `completed_count`, `bounced_count`, `unsubscribed_count` from the batch analytics endpoint to compute accurate active count.
+- **Files involved:** `src/leads-monitor.ts` (evaluateLeadDepletion), `src/instantly-direct.ts` (getBatchCampaignAnalytics - returns all count fields)
+- **How it was detected:** Leads monitoring alerts didn't match what CMs saw in Instantly UI
+
+---
+
+# Section 2: Known Noise Patterns
+
+### Equal Distribution Kills
+**Pattern:** All variants in a campaign have ~equal sent counts and 0 opportunities. System kills the first N variants (alphabetical or by variant index).
+**Why it's noise:** Campaign hasn't matured enough for any variant to differentiate. Kills are technically correct (0 opps above threshold) but not meaningful signal.
+**Classification:** NOISE
+**Slack note:** "Equal distribution kill in [campaign] - campaign too young to differentiate variants."
+
+### CM Re-enabling Killed Variants
+**Pattern:** Same variant appears in DISABLED audit_logs across consecutive runs. CM is re-enabling variants after CC kills them.
+**Why it's noise:** CM behavior, not a CC bug. CM may have context the system doesn't (new leads added, copy changed). Ghost detection (Phase 4) handles this by writing exempt keys.
+**Classification:** CM_BEHAVIOR
+**Slack note:** "[CM] re-enabled [N] killed variants. Not a system issue."
+
+### Expansion Surge
+**Pattern:** Kills, blocks, and campaign counts spike after new CMs are added to PILOT_CMS in config.ts.
+**Why it's noise:** New campaigns being evaluated for the first time. Mature campaigns with poor variants get killed on first pass. Expected for 2-3 runs after onboarding.
+**Classification:** NOISE
+**Slack note:** "[N] new CMs onboarded. Elevated kills expected for 2-3 runs."
+
+### Last-Variant Protection
+**Pattern:** A variant is below threshold but shows as BLOCKED instead of DISABLED in audit_logs.
+**Why it's noise:** It's the last active variant in the campaign. safetyCheck() in evaluator.ts returns canKill=false when remaining active variants would be 0. CC protects it by design to prevent emptying a campaign step.
+**Classification:** EXPECTED_BEHAVIOR
+
+### OFF Campaign Buffer
+**Pattern:** Campaign with "OFF" prefix in name has a higher effective threshold than expected.
+**Why it's noise:** OFF campaigns get a 20% threshold extension (OFF_CAMPAIGN_BUFFER = 1.2 in config.ts). resolveThreshold() in thresholds.ts applies this multiplier. By design - OFF campaigns get more runway before kill.
+**Classification:** EXPECTED_BEHAVIOR
+
+### Workspace Count Fluctuation
+**Pattern:** workspaces_processed varies by 1-2 between runs.
+**Why it's noise:** Some workspaces may have zero active campaigns in a given run and get skipped. API timeouts on one workspace don't affect others. The worker processes only WORKSPACE_CONFIGS entries that have valid API keys.
+**Classification:** NOISE (unless workspace is consistently missing for 3+ runs - then investigate API key validity)
+
+### Digest-Only Run
+**Pattern:** run_summaries row with campaigns_evaluated = 0 at 12:00 UTC (8am ET).
+**Why it's noise:** The 8am ET run is digest-only (CRON_HOURS_UTC = [10, 16, 22] for eval runs; 12:00 UTC is excluded). sendMorningDigest() runs instead of the evaluation pipeline. Expected behavior.
+**Classification:** EXPECTED_BEHAVIOR
+
+---
+
+# Section 3: Classification Decision Tree
+
+## Classification Flow
+
+For each finding from the analysis steps:
+
+1. Does this match a Known Noise Pattern (Section 2)?
+   YES -> Classify accordingly (NOISE, CM_BEHAVIOR, or EXPECTED_BEHAVIOR), produce NOTE, move on
+   NO -> Continue
+
+2. Is the data in audit_logs/run_summaries consistent with what the CC code should produce given the Instantly API data?
+   YES -> Not a CC code bug. Classify as:
+     - API_ISSUE: Instantly returned unexpected data (stale analytics, missing campaigns, malformed step data)
+     - CM_BEHAVIOR: CM action explains the pattern (re-enables, campaign config changes, new leads added)
+     - INFRA: Environment issue (Cloudflare Worker timeout, Supabase connection failure, Slack API error, KV rate limit)
+   NO -> CC code bug. Proceed to full investigation.
+
+3. For CC code bugs, does it match a Bug Class Registry entry (Section 1)?
+   YES -> Use that entry's investigation path. Check the fix version commit hash.
+         If fix IS deployed and bug recurred -> regression. CRITICAL priority.
+         If fix is NOT deployed -> known open issue. NOTE with version info.
+   NO -> New bug class. Full investigation required. Trace the code path through:
+         - src/evaluator.ts for kill/block decision logic
+         - src/thresholds.ts for threshold resolution
+         - src/index.ts for execution flow
+         - src/dashboard-state.ts for dashboard writes
+         - src/supabase.ts for data persistence
+         - src/self-audit.ts for audit check implementations
+
+4. Severity assignment:
+   - CRITICAL: Incorrect kills (variant killed when it shouldn't be), data loss (writes silently failing), regression of a fixed bug
+   - WARNING: Missing data (ghost_details null), threshold miscalculation that hasn't caused incorrect kills yet, leads monitoring false alerts
+   - INFO: Dashboard display issues, notification delivery failures, KV key staleness
