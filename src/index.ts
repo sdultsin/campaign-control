@@ -601,7 +601,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
           console.log(
             `[auto-turnoff] ${activeCampaigns.length} campaigns` +
-              (offCount > 0 ? ` (${offCount} OFF, buffered)` : '') +
+              (offCount > 0 ? ` (${offCount} OFF, skipped)` : '') +
               ` in ${workspace.name}`,
           );
 
@@ -629,6 +629,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
             // Pilot filter: skip campaigns whose CM is not in the pilot
             if (!isPilotCampaign(cmName)) return result;
+
+            // Skip OFF campaigns — already turned off, no need to evaluate or notify
+            if (isOffCampaign(campaign.name)) return result;
 
             // Per-CM dry run: evaluate and log but don't kill or notify
             const isDryRun = env.DRY_RUN === 'true' || DRY_RUN_CMS.has(cmName ?? '');
