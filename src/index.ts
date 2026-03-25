@@ -357,7 +357,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === '/__scheduled') {
-      const runPromise = executeScheduledRun(env, { skipAudit: true });
+      const runPromise = executeScheduledRun(env);
       ctx.waitUntil(runPromise);
       await runPromise;
       return new Response('Scheduled run complete. Check console logs for output.');
