@@ -168,6 +168,7 @@ export interface KillAction {
 // Environment bindings
 export interface Env {
   KV: KVNamespace;
+  ON_DEMAND_QUEUE: Queue;
   DRY_RUN: string;
   CONCURRENCY_CAP: string;
   SLACK_BOT_TOKEN: string;

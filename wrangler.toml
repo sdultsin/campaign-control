@@ -18,3 +18,12 @@ SLACK_FALLBACK_CHANNEL = "C0AMRK8RC4R"
 KILLS_ENABLED = "true"
 INSTANTLY_MODE = "direct"
 AUDIT_SLACK_CHANNEL = "C0APDQ3MMR6"
+
+[[queues.producers]]
+queue = "cc-on-demand"
+binding = "ON_DEMAND_QUEUE"
+
+[[queues.consumers]]
+queue = "cc-on-demand"
+max_batch_size = 1
+max_retries = 0

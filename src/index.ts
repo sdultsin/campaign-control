@@ -356,11 +356,22 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname === '/__trigger') {
+      await env.ON_DEMAND_QUEUE.send({
+        type: 'on-demand',
+        triggeredAt: new Date().toISOString(),
+      });
+      return new Response(
+        'Run queued. It will execute with full cron-level resources. Check #cc-admin for results.',
+        { status: 202 },
+      );
+    }
+
     if (url.pathname === '/__scheduled') {
-      const runPromise = executeScheduledRun(env);
-      ctx.waitUntil(runPromise);
-      await runPromise;
-      return new Response('Scheduled run complete. Check console logs for output.');
+      return new Response(
+        'This endpoint is deprecated (fetch handlers get cut off mid-run). Use /__trigger instead, which routes through a Queue consumer with full execution budget.',
+        { status: 410 },
+      );
     }
 
     if (url.pathname === '/__dashboard') {
@@ -387,7 +398,20 @@ export default {
       return clearV1Keys(env);
     }
 
-    return new Response('Auto Turn-Off Worker. Use /__scheduled to trigger manually, /__baseline to capture a baseline.', { status: 200 });
+    return new Response('Auto Turn-Off Worker. Use /__trigger to queue a manual run, /__baseline to capture a baseline.', { status: 200 });
+  },
+
+  async queue(batch: MessageBatch<{ type: string; triggeredAt: string }>, env: Env): Promise<void> {
+    for (const message of batch.messages) {
+      console.log(JSON.stringify({
+        event: 'on_demand_trigger',
+        triggeredAt: message.body.triggeredAt,
+        processedAt: new Date().toISOString(),
+      }));
+
+      await executeScheduledRun(env);
+      message.ack();
+    }
   },
 };
 
