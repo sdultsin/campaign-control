@@ -347,7 +347,7 @@ export default {
       return;
     }
 
-    // 10:00, 16:00, 22:00 UTC = 6am, 12pm, 6pm EDT: full evaluation run
+    // 10:00, 16:00, 19:00, 23:00 UTC = 6am, 12pm, 3pm, 7pm ET: full evaluation run
     const runPromise = executeScheduledRun(env);
     ctx.waitUntil(runPromise);
     await runPromise;
