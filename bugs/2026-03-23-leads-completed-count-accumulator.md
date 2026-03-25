@@ -45,15 +45,19 @@ Full verification at `specs/2026-03-23-6am-verification-results.md`, Section 2 (
 
 ## Resolution
 
-**Decision: Accept + Escalate**
+**Decision: CLOSED - Not a real problem (2026-03-24)**
 
-- The `completed_count` lifetime accumulator edge case is accepted as a known limitation
-- The error is safe-direction: it overestimates depletion (triggers LEADS_WARNING earlier), never underestimates
-- This is the third attempt to fix leads count accuracy (`contacted_count` fix → MCP too slow → batch analytics approximation). Each workaround added complexity for marginal gain
-- No code change — the current batch analytics approach is the right tradeoff (1 API call/workspace, <1s vs 23s/campaign via MCP)
-- Escalation: Request a proper `/leads/count` endpoint from Instantly (see Draft CTO Message below)
-- Date: 2026-03-23
+Original analysis assumed CMs delete completed leads and re-upload fresh batches. Actual CM behavior is different: CMs only delete **unopened** leads for recycling. Completed leads stay in the campaign until it's truly finished. When a campaign is finished, CMs delete all leads but keep the campaign OFF (preserving analytics). CC skips OFF campaigns.
 
-## Draft CTO Message
+This means:
+- `completed_count` in batch analytics should match actual completed leads, because completed leads are never deleted mid-campaign
+- The accumulator only diverges when completed leads are deleted, which doesn't happen during active campaigns
+- The `active = leads_count - completed - bounced - unsub` math is accurate under real CM workflows
+
+**Campaign 7's 60x discrepancy** remains unexplained. Possible causes: non-standard CM behavior on that specific campaign, or an Instantly API bug. Worth spot-checking on a future run, but not worth building workarounds or escalating to Instantly CTO.
+
+No code change. No CTO escalation. Draft message below kept for reference only.
+
+## Draft CTO Message (NOT SENDING - kept for reference)
 
 Hey [name] — running into a data accuracy issue with the batch analytics endpoint that I think warrants a quick API addition. `GET /campaigns/analytics` returns `completed_count` (and previously `contacted_count`) as lifetime accumulators rather than point-in-time counts — meaning when CMs delete completed leads and re-upload fresh batches, `completed_count` keeps growing while `leads_count` reflects the current state. We use these fields to monitor lead depletion in real-time, so accumulator values produce false LEADS_WARNING alerts (Campaign 7 shows 7,146 from batch vs 116 actual — 60x off). We already hit this with `contacted_count` and worked around it by switching to the MCP `count_leads` call, but that paginates through 249 pages per campaign and takes ~23 seconds each, which doesn't scale. What we actually need is either: (a) a `/leads/count` endpoint that returns current lead status counts by campaign, or (b) non-accumulator (point-in-time) status counts in the batch analytics response. Either would unblock us cleanly.

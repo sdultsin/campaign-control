@@ -47,6 +47,14 @@
 - **Files involved:** `src/leads-monitor.ts` (evaluateLeadDepletion), `src/instantly-direct.ts` (getBatchCampaignAnalytics - returns all count fields)
 - **How it was detected:** Leads monitoring alerts didn't match what CMs saw in Instantly UI
 
+### 7. Ghost Audit Index Mismatch (d7a5055 -> [pending])
+- **Symptoms:** self-audit ghost_audit check FAIL reporting missing exempt KV keys (e.g. `exempt:<id>:1:3`), but KV actually contains the key at `exempt:<id>:0:3`. The exempt key exists; the lookup constructs the wrong key.
+- **Root cause:** `ghost_details` in run_summaries stores `step: kill.stepIndex + 1` (1-based, for display). The self-audit `checkGhostAudit` used `ghost.step` directly to construct the exempt KV key, but exempt keys are written with the 0-based `kill.stepIndex`. Result: audit looked up `exempt:<id>:1:<var>` when the actual key was `exempt:<id>:0:<var>`.
+- **Bug class pattern:** **1-based display values used in 0-based lookups.** Any time a value is stored with +1 for human display, downstream code that uses it for system lookups (KV keys, API calls, array indices) must subtract 1. Audit checks are especially vulnerable because they reconstruct keys from display-oriented data.
+- **Investigation path:** If ghost_audit FAIL shows "missing exempt keys", compare the step number in the missing key against KV. If `exempt:<id>:<N>:<var>` is missing but `exempt:<id>:<N-1>:<var>` exists, this is the index mismatch. Query: check `audit_results` for `ghost_audit` FAIL entries and parse the `details` field for the constructed key.
+- **Files involved:** `src/self-audit.ts` (checkGhostAudit ~line 256, exempt key construction), `src/index.ts` (~line 2270 ghost_details step assignment, ~line 2316 exempt key write)
+- **How it was detected:** Layer 2 audit found ghost_audit FAIL with `missing exempt:...:1:3` while kv_summary showed `exempt_keys=1` at the 0-based index
+
 ---
 
 # Section 2: Known Noise Patterns

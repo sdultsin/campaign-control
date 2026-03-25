@@ -251,9 +251,11 @@ async function checkGhostAudit(kv: KVNamespace, runSummary: RunSummary): Promise
     }
 
     // Verify exempt KV keys exist for each ghost
+    // ghost.step is 1-based (for display), but exempt KV keys use 0-based stepIndex.
+    // Convert back to 0-based by subtracting 1. See index.ts line ~2316.
     const missingExemptKeys: string[] = [];
     for (const ghost of runSummary.ghostDetails) {
-      const exemptKey = `exempt:${ghost.campaignId}:${ghost.step}:${ghost.variant}`;
+      const exemptKey = `exempt:${ghost.campaignId}:${ghost.step - 1}:${ghost.variant}`;
       const val = await kv.get(exemptKey);
       if (!val) missingExemptKeys.push(exemptKey);
     }
