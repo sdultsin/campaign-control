@@ -2357,20 +2357,16 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
                   if (isDryRun) {
                     console.log(`[ghost] [DRY RUN] Ghost Slack notification: ${ghostMsg}`);
-                  }
-
-                  const cmChannel = cmName ? CM_MONITOR_CHANNELS[cmName] : null;
-                  if (cmChannel) {
+                  } else {
+                    const adminChannel = env.AUDIT_SLACK_CHANNEL || 'C0APDQ3MMR6';
                     await postThreadedMessage(
-                      cmChannel,
+                      adminChannel,
                       `:ghost: Ghost Re-Enable Detected`,
                       ghostMsg,
                       env.SLACK_BOT_TOKEN,
                     ).catch((err) =>
                       console.error(`[ghost] Slack notification failed for ${campaignId} step ${kill.stepIndex + 1} var ${kill.variantIndex}: ${err}`)
                     );
-                  } else {
-                    console.warn(`[ghost] No CM channel found for ${cmName ?? 'unknown CM'}, ghost notification skipped for ${campaignName} step ${kill.stepIndex + 1} var ${variantLabel}`);
                   }
 
                   await env.KV.put(ghostNotifiedKey, '1', { expirationTtl: GHOST_NOTIFIED_TTL_SECONDS }).catch((err) =>
