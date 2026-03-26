@@ -2479,19 +2479,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     `:ghost: Ghost re-enable detected: *${campaignName}* Step ${kill.stepIndex + 1} Variant ${variantLabel} ` +
                     `was killed on ${killedDate} but has been re-enabled. CC will not re-disable this variant.`;
 
-                  if (isDryRun) {
-                    console.log(`[ghost] [DRY RUN] Ghost Slack notification: ${ghostMsg}`);
-                  } else {
-                    const adminChannel = env.AUDIT_SLACK_CHANNEL || 'C0APDQ3MMR6';
-                    await postThreadedMessage(
-                      adminChannel,
-                      `:ghost: Ghost Re-Enable Detected`,
-                      ghostMsg,
-                      env.SLACK_BOT_TOKEN,
-                    ).catch((err) =>
-                      console.error(`[ghost] Slack notification failed for ${campaignId} step ${kill.stepIndex + 1} var ${kill.variantIndex}: ${err}`)
-                    );
-                  }
+                  console.log(`[ghost] ${ghostMsg}`);
 
                   await env.KV.put(ghostNotifiedKey, '1', { expirationTtl: GHOST_NOTIFIED_TTL_SECONDS }).catch((err) =>
                     console.error(`[ghost] Failed to write ghost-notified dedup key: ${err}`)
