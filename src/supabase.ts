@@ -71,11 +71,15 @@ export async function writeLeadsAuditToSupabase(
   if (error) console.error(`[supabase] leads_audit_logs insert failed: ${error.message}`);
 }
 
+/**
+ * Insert a run_summary row. Returns the row UUID so it can be updated later
+ * (e.g. after subsequent phases complete). Returns null on failure.
+ */
 export async function writeRunSummaryToSupabase(
   sb: SupabaseClient,
   summary: RunSummary,
-): Promise<void> {
-  const { error } = await sb.from('run_summaries').insert({
+): Promise<string | null> {
+  const { data, error } = await sb.from('run_summaries').insert({
     timestamp: summary.timestamp,
     workspaces_processed: summary.workspacesProcessed,
     campaigns_evaluated: summary.campaignsEvaluated,
@@ -99,8 +103,50 @@ export async function writeRunSummaryToSupabase(
     winners_detected: summary.winnersDetected,
     dry_run: summary.dryRun,
     worker_version: WORKER_VERSION,
-  });
-  if (error) console.error(`[supabase] run_summaries insert failed: ${error.message}`);
+  }).select('id').single();
+  if (error) {
+    console.error(`[supabase] run_summaries insert failed: ${error.message}`);
+    return null;
+  }
+  return (data as { id: string } | null)?.id ?? null;
+}
+
+/**
+ * Update an existing run_summary row by ID with final data from later phases.
+ * Used to upgrade the early/partial summary written after Phase 1 with
+ * rescan, leads, ghost, and duration data from Phases 2-7.
+ */
+export async function updateRunSummaryInSupabase(
+  sb: SupabaseClient,
+  rowId: string,
+  summary: RunSummary,
+): Promise<void> {
+  const { error } = await sb.from('run_summaries').update({
+    timestamp: summary.timestamp,
+    workspaces_processed: summary.workspacesProcessed,
+    campaigns_evaluated: summary.campaignsEvaluated,
+    variants_disabled: summary.variantsDisabled,
+    variants_blocked: summary.variantsBlocked,
+    variants_kills_paused: summary.variantsKillsPaused,
+    variants_warned: summary.variantsWarned,
+    errors: summary.errors,
+    duration_ms: summary.durationMs,
+    rescan_checked: summary.rescanChecked,
+    rescan_re_enabled: summary.rescanReEnabled,
+    rescan_expired: summary.rescanExpired,
+    rescan_cm_override: summary.rescanCmOverride,
+    leads_checked: summary.leadsChecked,
+    leads_check_errors: summary.leadsCheckErrors,
+    leads_warnings: summary.leadsWarnings,
+    leads_exhausted: summary.leadsExhausted,
+    leads_recovered: summary.leadsRecovered,
+    ghost_re_enables: summary.ghostReEnables,
+    ghost_details: summary.ghostDetails ?? null,
+    winners_detected: summary.winnersDetected,
+    dry_run: summary.dryRun,
+    worker_version: WORKER_VERSION,
+  }).eq('id', rowId);
+  if (error) console.error(`[supabase] run_summaries update failed: ${error.message}`);
 }
 
 export async function writeDailySnapshotToSupabase(

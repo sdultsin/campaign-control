@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { AuditEntry, LeadsAuditEntry, DashboardItemType, DashboardSeverity, WinnerEntry } from './types';
+import type { AuditEntry, LeadsAuditEntry, DashboardItemType, DashboardSeverity, WinnerEntry, WarningDetail } from './types';
 import { upsertDashboardItem, resolveStaleItems } from './supabase';
 import { PILOT_CMS } from './config';
 
@@ -24,6 +24,7 @@ interface DetectedIssue {
  * - blockedActions: AuditEntry[] where action = 'BLOCKED' from this run
  * - leadsExhausted: LeadsAuditEntry[] where action = 'LEADS_EXHAUSTED' from this run
  * - leadsWarnings: LeadsAuditEntry[] where action = 'LEADS_WARNING' from this run
+ * - approaching: WarningDetail[] for variants at 80%+ of kill threshold
  *
  * For each issue: upsert to dashboard_items (update last_scan_at if existing).
  * For items in dashboard_items NOT found in this scan: mark resolved, write resolution_log.
@@ -36,6 +37,7 @@ export async function buildDashboardState(
   leadsWarnings: LeadsAuditEntry[],
   dryRunKills: AuditEntry[] = [],
   winners: WinnerEntry[] = [],
+  approaching: WarningDetail[] = [],
 ): Promise<{ upserted: number; resolved: number }> {
   // Collect all detected issues, keyed by CM
   const issuesByCm = new Map<string, DetectedIssue[]>();
@@ -169,6 +171,30 @@ export async function buildDashboardState(
         ratio: entry.ratio,
         winner_threshold: entry.winnerThreshold,
         kill_threshold: entry.killThreshold,
+        is_off: entry.isOff,
+      },
+    });
+  }
+
+  // APPROACHING -> WARNING dashboard items (variants at 80%+ of kill threshold)
+  for (const entry of approaching) {
+    if (!entry.cm) continue;
+    addIssue({
+      item_type: 'APPROACHING',
+      severity: 'WARNING',
+      cm: entry.cm,
+      campaign_id: entry.campaignId,
+      campaign_name: entry.campaignName,
+      workspace_id: entry.workspaceId,
+      workspace_name: entry.workspaceName,
+      step: entry.stepIndex + 1,
+      variant: entry.variantIndex,
+      variant_label: entry.variantLabel,
+      context: {
+        sent: entry.sent,
+        threshold: entry.threshold,
+        pct_consumed: entry.pctConsumed,
+        opportunities: entry.opportunities,
         is_off: entry.isOff,
       },
     });

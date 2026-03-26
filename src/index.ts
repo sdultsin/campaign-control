@@ -14,7 +14,8 @@ import {
 import type { NotificationMeta } from './slack';
 import {
   getSupabaseClient, writeAuditLogToSupabase, writeLeadsAuditToSupabase,
-  writeRunSummaryToSupabase, writeDailySnapshotToSupabase, writeNotificationToSupabase,
+  writeRunSummaryToSupabase, updateRunSummaryInSupabase,
+  writeDailySnapshotToSupabase, writeNotificationToSupabase,
   getDashboardDigestData,
 } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -45,7 +46,7 @@ import type {
   Env, KillAction, CampaignDetail, StepAnalytics, AuditEntry, RunSummary, RescanEntry,
   DailySnapshot, BaselineSnapshot, WorkspaceSnapshot, CmSnapshot, CampaignHealthEntry,
   LeadsCheckCandidate, LeadsWarningEntry, LeadsExhaustedEntry, LeadsAuditEntry,
-  CampaignResult, WinnerEntry, GhostDetail,
+  CampaignResult, WinnerEntry, GhostDetail, WarningDetail,
 } from './types';
 
 import { runSelfAudit } from './self-audit';
@@ -542,9 +543,10 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
 
-    // Dashboard state: collect BLOCKED, dry-run kills, and leads issues for Phase 5
+    // Dashboard state: collect BLOCKED, dry-run kills, warnings, and leads issues for Phase 5
     const dashboardBlocked: AuditEntry[] = [];
     const dashboardDryRunKills: AuditEntry[] = [];
+    const dashboardApproaching: WarningDetail[] = [];
     const dashboardLeadsExhausted: LeadsAuditEntry[] = [];
     const dashboardLeadsWarnings: LeadsAuditEntry[] = [];
 
@@ -563,6 +565,11 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
       byCm: {} as Record<string, CmSnapshot>,
       campaignHealth: [] as CampaignHealthEntry[],
     };
+
+    // Track early run_summary row ID so we can update it with final data
+    let earlySummaryRowId: string | null = null;
+    // Run timestamp is fixed at start so early and final writes share the same logical run
+    const runTimestamp = new Date().toISOString();
 
     // Higher concurrency for direct API (no shared SSE connection bottleneck)
     const concurrencyCap = useDirectApi
@@ -642,6 +649,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               blocked: [],
               dryRunKills: [],
               warnings: 0,
+              warningDetails: [],
               deferred: 0,
               killsPaused: 0,
               errors: 0,
@@ -1079,6 +1087,26 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                 const killedIndices = kills.map((k) => k.variantIndex);
                 const warnings = checkVariantWarnings(stepDetail, stepAnalytics, stepIndex, threshold, killedIndices, isOffCampaign(campaign.name));
 
+                // Collect ALL approaching variants for dashboard (independent of Slack dedup)
+                for (const warning of warnings) {
+                  result.warningDetails.push({
+                    campaignId: campaign.id,
+                    campaignName: campaign.name,
+                    workspaceId: workspace.id,
+                    workspaceName: workspace.name,
+                    stepIndex,
+                    variantIndex: warning.variantIndex,
+                    variantLabel: warning.variantLabel,
+                    sent: warning.sent,
+                    threshold: warning.threshold,
+                    pctConsumed: warning.pctConsumed,
+                    opportunities: warning.opportunities,
+                    cm: cmName,
+                    product: wsConfig.product,
+                    isOff: warning.isOff,
+                  });
+                }
+
                 for (const warning of warnings) {
                   const dedupKey = `warning:${campaign.id}:${stepIndex}:${warning.variantIndex}`;
                   const alreadySent = await env.KV.get(dedupKey);
@@ -1429,6 +1457,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             totalErrors += r.errors;
             dashboardBlocked.push(...r.blocked);
             dashboardDryRunKills.push(...r.dryRunKills);
+            dashboardApproaching.push(...r.warningDetails);
             dashboardWinners.push(...r.winners);
             totalWinnersDetected += r.winnersDetected;
             if (r.leadsCandidate) leadsCheckCandidates.push(r.leadsCandidate);
@@ -1480,11 +1509,99 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               campaignsProcessed: totalCampaignsEvaluated,
             }), { expirationTtl: 3600 }).catch(() => {});
           }
+
+          // Supabase checkpoint: write/update partial run_summary every 10 min
+          // during Phase 1 so the dashboard has recent data even if the run
+          // times out before completing (CF cron has 15-min wall-clock limit).
+          if (sb && !earlySummaryRowId && (Date.now() - runStart) > 10 * 60 * 1000) {
+            const checkpointSummary: RunSummary = {
+              timestamp: runTimestamp,
+              workspacesProcessed: totalWorkspaces,
+              campaignsEvaluated: totalCampaignsEvaluated,
+              variantsDisabled: totalVariantsKilled,
+              variantsBlocked: totalVariantsBlocked,
+              variantsKillsPaused: totalVariantsKillsPaused,
+              variantsWarned: totalVariantsWarned,
+              errors: totalErrors,
+              durationMs: Date.now() - runStart,
+              rescanChecked: 0,
+              rescanReEnabled: 0,
+              rescanExpired: 0,
+              rescanCmOverride: 0,
+              leadsChecked: 0,
+              leadsCheckErrors: 0,
+              leadsWarnings: 0,
+              leadsExhausted: 0,
+              leadsRecovered: 0,
+              ghostReEnables: 0,
+              ghostDetails: null,
+              winnersDetected: totalWinnersDetected,
+              dryRun: isDryRun,
+            };
+            earlySummaryRowId = await writeRunSummaryToSupabase(sb, checkpointSummary).catch((err) => {
+              console.error(`[supabase] checkpoint run summary write failed: ${err}`);
+              return null;
+            });
+            console.log(`[auto-turnoff] Checkpoint run summary written at ${Date.now() - runStart}ms (row=${earlySummaryRowId}, campaigns=${totalCampaignsEvaluated})`);
+          }
         } catch (wsErr) {
           console.error(
             `[auto-turnoff] Error processing workspace ${workspace.name} (${workspace.id}): ${wsErr}`,
           );
           totalErrors++;
+        }
+      }
+
+      // --- EARLY RUN SUMMARY (post-Phase 1) ---
+      // Ensure a run_summary exists in Supabase after the workspace loop completes.
+      // If a checkpoint was already written mid-loop (>10 min), update it with
+      // final Phase 1 data. Otherwise insert a new row. This guarantees the
+      // dashboard shows recent scan data even if Phases 2-7 push the run past
+      // Cloudflare's 15-minute cron limit.
+      {
+        const phase1DurationMs = Date.now() - runStart;
+        const earlySummary: RunSummary = {
+          timestamp: runTimestamp,
+          workspacesProcessed: totalWorkspaces,
+          campaignsEvaluated: totalCampaignsEvaluated,
+          variantsDisabled: totalVariantsKilled,
+          variantsBlocked: totalVariantsBlocked,
+          variantsKillsPaused: totalVariantsKillsPaused,
+          variantsWarned: totalVariantsWarned,
+          errors: totalErrors,
+          durationMs: phase1DurationMs,
+          rescanChecked: 0,
+          rescanReEnabled: 0,
+          rescanExpired: 0,
+          rescanCmOverride: 0,
+          leadsChecked: 0,
+          leadsCheckErrors: 0,
+          leadsWarnings: 0,
+          leadsExhausted: 0,
+          leadsRecovered: 0,
+          ghostReEnables: 0,
+          ghostDetails: null,
+          winnersDetected: totalWinnersDetected,
+          dryRun: isDryRun,
+        };
+
+        // KV early write (always, overwrites checkpoint if one was written)
+        await writeRunSummary(env.KV, earlySummary).catch((err) =>
+          console.error(`[auto-turnoff] Failed to write early run summary to KV: ${err}`),
+        );
+        // Supabase: update checkpoint row or insert new
+        if (sb) {
+          if (earlySummaryRowId) {
+            await updateRunSummaryInSupabase(sb, earlySummaryRowId, earlySummary).catch((err) =>
+              console.error(`[supabase] early run summary update failed: ${err}`),
+            );
+          } else {
+            earlySummaryRowId = await writeRunSummaryToSupabase(sb, earlySummary).catch((err) => {
+              console.error(`[supabase] early run summary write failed: ${err}`);
+              return null;
+            });
+          }
+          console.log(`[auto-turnoff] Early run summary written (${phase1DurationMs}ms elapsed, row=${earlySummaryRowId})`);
         }
       }
 
@@ -2413,6 +2530,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             dashboardLeadsWarnings,
             dashboardDryRunKills,
             dashboardWinners,
+            dashboardApproaching,
           );
           console.log(`[auto-turnoff] Dashboard state: ${dashResult.upserted} upserted, ${dashResult.resolved} resolved`);
         } catch (dashErr) {
@@ -2491,9 +2609,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
         `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} winners=${totalWinnersDetected} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
       );
 
-      // 8. WRITE RUN SUMMARY TO KV
+      // 8. WRITE FINAL RUN SUMMARY (updates early summary with Phase 2-7 data)
       const runSummary: RunSummary = {
-        timestamp: new Date().toISOString(),
+        timestamp: runTimestamp,
         workspacesProcessed: totalWorkspaces,
         campaignsEvaluated: totalCampaignsEvaluated,
         variantsDisabled: totalVariantsKilled,
@@ -2520,9 +2638,18 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
       await writeRunSummary(env.KV, runSummary).catch((err) =>
         console.error(`[auto-turnoff] Failed to write run summary: ${err}`),
       );
-      if (sb) await writeRunSummaryToSupabase(sb, runSummary).catch((err) =>
-        console.error(`[supabase] run summary write failed: ${err}`),
-      );
+      // Update the early Supabase row with final data (or insert fresh if early write failed)
+      if (sb) {
+        if (earlySummaryRowId) {
+          await updateRunSummaryInSupabase(sb, earlySummaryRowId, runSummary).catch((err) =>
+            console.error(`[supabase] run summary update failed: ${err}`),
+          );
+        } else {
+          await writeRunSummaryToSupabase(sb, runSummary).catch((err) =>
+            console.error(`[supabase] run summary write failed: ${err}`),
+          );
+        }
+      }
 
       // PHASE 7: SELF-AUDIT (cron only, skipped on manual triggers)
       if (sb && !options?.skipAudit) {

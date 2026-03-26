@@ -358,6 +358,25 @@ export interface BaselineSnapshot extends DailySnapshot {
   note: string;
 }
 
+// --- Warning detail for dashboard APPROACHING items ---
+
+export interface WarningDetail {
+  campaignId: string;
+  campaignName: string;
+  workspaceId: string;
+  workspaceName: string;
+  stepIndex: number;
+  variantIndex: number;
+  variantLabel: string;
+  sent: number;
+  threshold: number;
+  pctConsumed: number;
+  opportunities: number;
+  cm: string | null;
+  product: Product;
+  isOff: boolean;
+}
+
 // --- Campaign result (returned from processWithConcurrency callback) ---
 
 export interface CampaignResult {
@@ -373,6 +392,8 @@ export interface CampaignResult {
   dryRunKills: AuditEntry[];
   /** Number of variants warned */
   warnings: number;
+  /** Warning detail entries for dashboard APPROACHING items */
+  warningDetails: WarningDetail[];
   /** Number of variants deferred (kill cap reached) */
   deferred: number;
   /** Number of variants with kills paused (KILLS_ENABLED=false) */
@@ -398,7 +419,7 @@ export interface CampaignResult {
 
 // --- Dashboard state types ---
 
-export type DashboardItemType = 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'WINNING';
+export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'WINNING';
 export type DashboardSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 export interface DashboardItem {
