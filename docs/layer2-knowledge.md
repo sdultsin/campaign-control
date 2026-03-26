@@ -65,10 +65,25 @@
 **Classification:** NOISE
 **Slack note:** "Equal distribution kill in [campaign] - campaign too young to differentiate variants."
 
+### Redemption Re-kill
+**Pattern:** Same variant appears as DISABLED in two consecutive runs, with a RE_ENABLED or RESCAN_RE_ENABLED audit_log entry between the two DISABLED entries.
+**Why it's noise:** Phase 2 (Redemption Window) auto-re-enabled the variant because late-arriving opportunities improved the opp/sent ratio past the recovery threshold. The next run re-evaluated the variant and killed it again because performance still fell below threshold after the grace period. This is the system working correctly - the variant got a fair second look and failed.
+**Classification:** EXPECTED_BEHAVIOR
+**Investigation path:** Query audit_logs for RE_ENABLED or RESCAN_RE_ENABLED actions for the same (campaign_id, step, variant) between the timestamps of the two DISABLED entries. If found, this is Redemption Re-kill.
+**Slack note:** "[N] variants re-killed after Redemption Window re-enable. Expected behavior."
+
+### Deploy Re-evaluation
+**Pattern:** Same variant appears as DISABLED in two consecutive runs, but worker_version differs between the two DISABLED audit_log entries.
+**Why it's noise:** A deploy between runs cleared the KV kill dedup keys (key pattern: `kill:{campaignId}:{variant}`). The variant was re-evaluated from scratch and killed again because it still failed threshold. Not a CM action and not a code bug - the 7-day dedup key was wiped by the KV clear that accompanies some deploy types.
+**Classification:** NOISE
+**Investigation path:** Compare worker_version on the two DISABLED audit_log rows for the same variant. If they differ, this is Deploy Re-evaluation. Cross-reference the deploy timestamp against the gap between the two kills.
+**Slack note:** "[N] re-kills after deploy KV wipe. Dedup keys cleared. Not a system bug."
+
 ### CM Re-enabling Killed Variants
-**Pattern:** Same variant appears in DISABLED audit_logs across consecutive runs. CM is re-enabling variants after CC kills them.
-**Why it's noise:** CM behavior, not a CC bug. CM may have context the system doesn't (new leads added, copy changed). Ghost detection (Phase 4) handles this by writing exempt keys.
+**Pattern:** Same variant appears as DISABLED in two consecutive runs, with NO RE_ENABLED/RESCAN_RE_ENABLED audit_log between the kills AND the same worker_version on both DISABLED entries.
+**Why it's noise:** CM behavior, not a CC bug. CM re-enabled the variant after CC killed it - possibly because they added new leads, changed copy, or disagreed with the kill. Ghost detection (Phase 4) handles this by writing exempt keys on the next run.
 **Classification:** CM_BEHAVIOR
+**IMPORTANT - check system causes first:** Before classifying any repeat kill as CM_BEHAVIOR, rule out Redemption Re-kill (check for RE_ENABLED audit_log between kills) and Deploy Re-evaluation (check worker_version on both DISABLED rows). Only if neither applies is this CM_BEHAVIOR.
 **Slack note:** "[CM] re-enabled [N] killed variants. Not a system issue."
 
 ### Expansion Surge
@@ -124,6 +139,11 @@ For each finding from the analysis steps:
    YES -> Not a CC code bug. Classify as:
      - API_ISSUE: Instantly returned unexpected data (stale analytics, missing campaigns, malformed step data)
      - CM_BEHAVIOR: CM action explains the pattern (re-enables, campaign config changes, new leads added)
+       SUB-CHECK for repeat kills before assigning CM_BEHAVIOR: If the same variant was killed in two consecutive runs, check for system-caused re-enables before attributing to CM action.
+         1. Query audit_logs for RE_ENABLED or RESCAN_RE_ENABLED actions for that (campaign_id, step, variant) between the two DISABLED timestamps. If found -> EXPECTED_BEHAVIOR (Redemption Re-kill), not CM_BEHAVIOR.
+         2. Compare worker_version on both DISABLED audit_log rows. If they differ -> NOISE (Deploy Re-evaluation), not CM_BEHAVIOR.
+         3. Only if NEITHER applies -> CM_BEHAVIOR.
+       See Section 2 noise patterns: "Redemption Re-kill" and "Deploy Re-evaluation".
      - INFRA: Environment issue (Cloudflare Worker timeout, Supabase connection failure, Slack API error, KV rate limit)
    NO -> CC code bug. Proceed to full investigation.
 

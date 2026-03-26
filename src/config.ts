@@ -96,6 +96,15 @@ export function getWorkspaceConfig(workspaceId: string): WorkspaceConfig | null 
 }
 
 // ---------------------------------------------------------------------------
+// Workspace-level CM exclusions. Campaigns resolving to an excluded CM
+// in a specific workspace are skipped (e.g. CM moved workspaces but old
+// campaigns remain). Does not affect the CM in other workspaces.
+// ---------------------------------------------------------------------------
+export const WORKSPACE_CM_EXCLUSIONS: Record<string, Set<string>> = {
+  'the-eagles': new Set(['SAMUEL']),
+};
+
+// ---------------------------------------------------------------------------
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
@@ -140,6 +149,10 @@ export const RESCAN_MAX_WINDOW_HOURS = 48;
 // Leads depletion monitor: dedup TTLs
 export const LEADS_WARNING_DEDUP_TTL_SECONDS = 172800;   // 48 hours
 export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
+
+// Leads depletion monitor: absolute thresholds (replaces dailyLimit-based logic)
+export const LEADS_EXHAUSTED_THRESHOLD = 0;
+export const LEADS_WARNING_THRESHOLD = 5000;
 
 // Kill persistence monitor: max KV keys to check per run
 export const MAX_PERSISTENCE_CHECKS = 100;

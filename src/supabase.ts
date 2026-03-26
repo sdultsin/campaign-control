@@ -210,8 +210,10 @@ export async function upsertDashboardItem(
   const match = existing?.[0];
 
   if (match) {
-    // WINNING items dismissed by CM should never re-appear (TDD: "Done" = permanent dismiss)
-    if (item.item_type === 'WINNING' && match.dismissed_at) return;
+    // Items dismissed by CM should stay dismissed while the problem persists.
+    // They'll auto-resolve (resolved_at set) when the problem clears,
+    // or reappear if the problem recurs after resolution.
+    if (match.dismissed_at) return;
 
     // Update existing: refresh last_scan_at and context
     const { error } = await sb
@@ -224,8 +226,6 @@ export async function upsertDashboardItem(
         workspace_name: item.workspace_name,
         campaign_name: item.campaign_name,
         worker_version: WORKER_VERSION,
-        dismissed_at: null,
-        dismissed_by: null,
       })
       .eq('id', match.id);
     if (error) console.error(`[supabase] dashboard_items update failed: ${error.message}`);

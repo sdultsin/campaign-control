@@ -1,27 +1,27 @@
 import type { LeadsDepletionResult } from './types';
+import { LEADS_EXHAUSTED_THRESHOLD, LEADS_WARNING_THRESHOLD } from './config';
 
 /**
- * Evaluate a campaign's lead depletion status.
+ * Evaluate a campaign's lead depletion status using absolute thresholds.
  *
  * Returns:
- * - SKIPPED if totalLeads <= 0 or dailyLimit <= 0
- * - EXHAUSTED if uncontacted <= 0
- * - WARNING if uncontacted < dailyLimit (less than 1 day of leads)
+ * - SKIPPED if totalLeads <= 0
+ * - EXHAUSTED if uncontacted <= LEADS_EXHAUSTED_THRESHOLD (0)
+ * - WARNING if uncontacted < LEADS_WARNING_THRESHOLD (5000)
  * - HEALTHY otherwise
  */
 export function evaluateLeadDepletion(
   uncontacted: number,
-  dailyLimit: number,
   totalLeads: number,
 ): LeadsDepletionResult {
-  if (totalLeads <= 0 || dailyLimit <= 0) {
-    return { status: 'SKIPPED', uncontacted, totalLeads, dailyLimit };
+  if (totalLeads <= 0) {
+    return { status: 'SKIPPED', uncontacted, totalLeads };
   }
-  if (uncontacted <= 0) {
-    return { status: 'EXHAUSTED', uncontacted: 0, totalLeads, dailyLimit };
+  if (uncontacted <= LEADS_EXHAUSTED_THRESHOLD) {
+    return { status: 'EXHAUSTED', uncontacted: 0, totalLeads };
   }
-  if (uncontacted < dailyLimit) {
-    return { status: 'WARNING', uncontacted, totalLeads, dailyLimit };
+  if (uncontacted < LEADS_WARNING_THRESHOLD) {
+    return { status: 'WARNING', uncontacted, totalLeads };
   }
-  return { status: 'HEALTHY', uncontacted, totalLeads, dailyLimit };
+  return { status: 'HEALTHY', uncontacted, totalLeads };
 }

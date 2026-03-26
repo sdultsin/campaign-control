@@ -1,5 +1,5 @@
 import type { WorkspaceConfig } from './config';
-import { CM_CHANNEL_MAP, CM_MONITOR_CHANNELS, PILOT_CMS } from './config';
+import { CM_CHANNEL_MAP, CM_MONITOR_CHANNELS, PILOT_CMS, WORKSPACE_CM_EXCLUSIONS } from './config';
 
 /**
  * Resolve the Slack channel for a notification based on the CM name.
@@ -41,6 +41,15 @@ export function isPilotWorkspace(config: WorkspaceConfig): boolean {
  * For dedicated workspaces, returns the default CM.
  * For shared workspaces, parses from campaign title.
  */
+/**
+ * Check if a CM is excluded from monitoring in a specific workspace.
+ * Used when a CM moves workspaces but old campaigns haven't been cleaned up.
+ */
+export function isExcludedFromWorkspace(workspaceId: string, cmName: string | null): boolean {
+  if (!cmName) return false;
+  return WORKSPACE_CM_EXCLUSIONS[workspaceId]?.has(cmName) ?? false;
+}
+
 export function resolveCmName(
   workspaceConfig: WorkspaceConfig,
   campaignName: string,

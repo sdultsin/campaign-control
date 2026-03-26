@@ -2,7 +2,7 @@ import { McpClient } from './mcp-client';
 import { InstantlyApi } from './instantly';
 import { InstantlyDirectApi } from './instantly-direct';
 import { evaluateStep, evaluateVariant, checkVariantWarnings, evaluateWinner } from './evaluator';
-import { resolveChannel, resolveCmName, isPilotCampaign, isPilotWorkspace } from './router';
+import { resolveChannel, resolveCmName, isPilotCampaign, isPilotWorkspace, isExcludedFromWorkspace } from './router';
 import {
   NotificationCollector,
   formatKillDetails, formatLastVariantDetails,
@@ -210,6 +210,10 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
           if (threshold === null) continue;
 
           const cmName = resolveCmName(wsConfig, campaign.name);
+
+          // Workspace-level exclusion: skip excluded CMs from snapshot aggregation
+          if (isExcludedFromWorkspace(wsConfig.id, cmName)) continue;
+
           const primaryStepCount = campaignDetail.sequences[0].steps.length;
           const primaryAnalytics = allAnalytics.filter(
             (a) => parseInt(a.step, 10) < primaryStepCount,
@@ -653,6 +657,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
             // Pilot filter: skip campaigns whose CM is not in the pilot
             if (!isPilotCampaign(cmName)) return result;
+
+            // Workspace-level exclusion: skip campaigns for CMs excluded from this workspace
+            if (isExcludedFromWorkspace(wsConfig.id, cmName)) return result;
 
             // Skip OFF campaigns — already turned off, no need to evaluate or notify
             if (isOffCampaign(campaign.name)) return result;
@@ -1915,7 +1922,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             }
 
             // Evaluate
-            const result = evaluateLeadDepletion(uncontacted, candidate.dailyLimit, totalLeads);
+            const result = evaluateLeadDepletion(uncontacted, totalLeads);
             totalLeadsChecked++;
 
             if (result.status === 'SKIPPED') {

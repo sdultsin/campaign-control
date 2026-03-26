@@ -100,7 +100,6 @@ export interface LeadsDepletionResult {
   status: LeadsStatus;
   uncontacted: number;
   totalLeads: number;
-  dailyLimit: number;
 }
 
 export interface Variant {
