@@ -697,14 +697,17 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             // Skip OFF campaigns — already turned off, no need to evaluate or notify
             if (isOffCampaign(campaign.name)) return result;
 
-            // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD leads are curated
-            // warm lists, not cold outreach. Cold-outreach KPIs don't apply — skip entirely.
+            // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD lifetime contacted
+            // are curated warm lists (no-shows, opps, form-sent), not cold outreach.
+            // Cold-outreach KPIs don't apply — skip entirely.
+            // Uses contacted (lifetime accumulator, never resets) instead of leads_count
+            // (current queued leads, typically 0 for most campaigns).
             const wsBatch = leadsBatchByWorkspace.get(workspace.id);
             if (wsBatch) {
               const campAnalytics = wsBatch.get(campaign.id);
-              if (campAnalytics && campAnalytics.leads_count > 0 && campAnalytics.leads_count < WARM_LEADS_THRESHOLD) {
+              if (campAnalytics && campAnalytics.contacted < WARM_LEADS_THRESHOLD) {
                 console.log(
-                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${campAnalytics.leads_count} leads < ${WARM_LEADS_THRESHOLD} threshold)`,
+                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${campAnalytics.contacted} contacted < ${WARM_LEADS_THRESHOLD} threshold)`,
                 );
                 totalWarmLeadsSkipped++;
                 return result;
