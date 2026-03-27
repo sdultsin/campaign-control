@@ -34,6 +34,7 @@ import {
   CM_MONITOR_CHANNELS,
   DASHBOARD_BASE_URL,
   OPP_RUNWAY_MULTIPLIER,
+  getStepMultiplier,
   DRY_RUN_CMS,
   MAX_PERSISTENCE_CHECKS,
   EXEMPT_TTL_SECONDS,
@@ -226,6 +227,7 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
 
           for (let si = 0; si < primaryStepCount; si++) {
             const stepDetail = campaignDetail.sequences[0].steps[si];
+            const baselineStepThreshold = Math.round(threshold * getStepMultiplier(si));
             acc.totalSteps++;
 
             for (let vi = 0; vi < stepDetail.variants.length; vi++) {
@@ -238,7 +240,7 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
                   (a) => parseInt(a.step, 10) === si && parseInt(a.variant, 10) === vi,
                 );
                 if (row) {
-                  const decision = evaluateVariant(row.sent, row.opportunities, threshold);
+                  const decision = evaluateVariant(row.sent, row.opportunities, baselineStepThreshold);
                   if (decision.action === 'KILL_CANDIDATE') {
                     campAbove++;
                   }
@@ -754,6 +756,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
               for (let si = 0; si < primaryStepCount; si++) {
                 const snapStep = campaignDetail.sequences[0].steps[si];
+                const snapStepThreshold = Math.round(threshold * getStepMultiplier(si));
 
                 for (let vi = 0; vi < snapStep.variants.length; vi++) {
                   campTotal++;
@@ -765,7 +768,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       (a) => parseInt(a.step, 10) === si && parseInt(a.variant, 10) === vi,
                     );
                     if (row) {
-                      const decision = evaluateVariant(row.sent, row.opportunities, threshold);
+                      const decision = evaluateVariant(row.sent, row.opportunities, snapStepThreshold);
                       if (decision.action === 'KILL_CANDIDATE') {
                         campAbove++;
                       }
@@ -858,11 +861,14 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   (a) => parseInt(a.step, 10) === stepIndex,
                 );
 
+                // Step-position multiplier: follow-up steps get proportionally more runway
+                const stepThreshold = Math.round(threshold * getStepMultiplier(stepIndex));
+
                 const { kills, blocked } = evaluateStep(
                   stepAnalytics,
                   stepDetail,
                   stepIndex,
-                  threshold,
+                  stepThreshold,
                 );
 
                 // Build set of all kill indices for accurate surviving count
@@ -901,18 +907,18 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     sent,
                     opportunities,
                     ratio: ratioValue,
-                    threshold,
+                    threshold: stepThreshold,
                     notification: kill.notification,
                     survivingVariantCount,
                     isOff: isOffCampaign(campaign.name),
                   };
 
                   const effectiveThreshold = opportunities > 0
-                    ? Math.round(threshold * OPP_RUNWAY_MULTIPLIER)
-                    : threshold;
+                    ? Math.round(stepThreshold * OPP_RUNWAY_MULTIPLIER)
+                    : stepThreshold;
                   const triggerRule =
                     opportunities === 0
-                      ? `${sent} sent, 0 opportunities past ${threshold} sends`
+                      ? `${sent} sent, 0 opportunities past ${stepThreshold} sends`
                       : `Ratio ${ratioValue}:1 exceeds threshold ${effectiveThreshold}:1`;
 
                   const auditEntry: AuditEntry = {
@@ -927,7 +933,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     variantLabel: VARIANT_LABELS[kill.variantIndex] ?? String(kill.variantIndex),
                     cm: cmName,
                     product: wsConfig.product,
-                    trigger: { sent, opportunities, ratio: ratioValue, threshold, effective_threshold: effectiveThreshold, rule: triggerRule },
+                    trigger: { sent, opportunities, ratio: ratioValue, threshold: stepThreshold, effective_threshold: effectiveThreshold, rule: triggerRule },
                     safety: { survivingVariants: survivingVariantCount, notification: kill.notification },
                     dryRun: isDryRun,
                   };
@@ -968,7 +974,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       `[DRY RUN] Would kill: ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${kill.variantIndex} → channel=${channelId || 'FALLBACK'} cm=${cmName ?? 'unknown'}`,
                     );
                     console.log(
-                      `[DRY RUN] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${threshold} notification=${kill.notification ?? 'none'}`,
+                      `[DRY RUN] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${stepThreshold} notification=${kill.notification ?? 'none'}`,
                     );
                     // Write rescan entry even in dry run (for testing rescan phase)
                     const rescanEntry: RescanEntry = {
@@ -982,7 +988,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       disabledAt: new Date().toISOString(),
                       sent,
                       opportunities,
-                      threshold,
+                      threshold: stepThreshold,
                       cmName,
                       product: wsConfig.product,
                     };
@@ -1039,18 +1045,18 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     sent,
                     opportunities,
                     ratio: ratioValue,
-                    threshold,
+                    threshold: stepThreshold,
                     notification: 'LAST_VARIANT',
                     survivingVariantCount: 0,
                     isOff: isOffCampaign(campaign.name),
                   };
 
                   const effectiveThresholdBlocked = opportunities > 0
-                    ? Math.round(threshold * OPP_RUNWAY_MULTIPLIER)
-                    : threshold;
+                    ? Math.round(stepThreshold * OPP_RUNWAY_MULTIPLIER)
+                    : stepThreshold;
                   const blockedTriggerRule =
                     opportunities === 0
-                      ? `${sent} sent, 0 opportunities past ${threshold} sends`
+                      ? `${sent} sent, 0 opportunities past ${stepThreshold} sends`
                       : `Ratio ${ratioValue}:1 exceeds threshold ${effectiveThresholdBlocked}:1`;
 
                   // ALWAYS write audit entry for blocked variants (every run, not deduped)
@@ -1066,7 +1072,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     variantLabel: VARIANT_LABELS[blocked.variantIndex] ?? String(blocked.variantIndex),
                     cm: cmName,
                     product: wsConfig.product,
-                    trigger: { sent, opportunities, ratio: ratioValue, threshold, effective_threshold: effectiveThresholdBlocked, rule: blockedTriggerRule },
+                    trigger: { sent, opportunities, ratio: ratioValue, threshold: stepThreshold, effective_threshold: effectiveThresholdBlocked, rule: blockedTriggerRule },
                     safety: { survivingVariants: 0, notification: 'LAST_VARIANT' },
                     dryRun: isDryRun,
                   };
@@ -1089,7 +1095,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         `[${isDryRun ? 'DRY RUN' : 'KILLS PAUSED'}] BLOCKED (last variant): ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${blocked.variantIndex} → channel=${channelId || 'FALLBACK'} cm=${cmName ?? 'unknown'}`,
                       );
                       console.log(
-                        `[${isDryRun ? 'DRY RUN' : 'KILLS PAUSED'}] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${threshold} — NOT killed, last active variant`,
+                        `[${isDryRun ? 'DRY RUN' : 'KILLS PAUSED'}] Decision — sent=${sent} opportunities=${opportunities} ratio=${ratioValue} threshold=${stepThreshold} — NOT killed, last active variant`,
                       );
                     } else {
                       collector.add(channelId, 'LAST_VARIANT', formatLastVariantDetails(blockedAction), {
@@ -1127,7 +1133,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
                 // Early warning check — for ALL active variants approaching threshold
                 const killedIndices = kills.map((k) => k.variantIndex);
-                const warnings = checkVariantWarnings(stepDetail, stepAnalytics, stepIndex, threshold, killedIndices, isOffCampaign(campaign.name));
+                const warnings = checkVariantWarnings(stepDetail, stepAnalytics, stepIndex, stepThreshold, killedIndices, isOffCampaign(campaign.name));
 
                 // Collect ALL approaching variants for dashboard (independent of Slack dedup)
                 for (const warning of warnings) {
@@ -1174,11 +1180,11 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         ratio: warning.opportunities === 0
                           ? 'Infinity'
                           : (warning.sent / warning.opportunities).toFixed(1),
-                        threshold,
+                        threshold: stepThreshold,
                         effective_threshold: warning.opportunities > 0
-                          ? Math.round(threshold * OPP_RUNWAY_MULTIPLIER)
-                          : threshold,
-                        rule: `${warning.pctConsumed}% of threshold consumed (${warning.sent}/${threshold} sends)`,
+                          ? Math.round(stepThreshold * OPP_RUNWAY_MULTIPLIER)
+                          : stepThreshold,
+                        rule: `${warning.pctConsumed}% of threshold consumed (${warning.sent}/${stepThreshold} sends)`,
                       },
                       safety: { survivingVariants: -1, notification: null },
                       dryRun: isDryRun,
@@ -1230,7 +1236,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   );
                   if (!variantAnalytics) continue;
 
-                  const winnerResult = evaluateWinner(variantAnalytics.sent, variantAnalytics.opportunities, threshold);
+                  const winnerResult = evaluateWinner(variantAnalytics.sent, variantAnalytics.opportunities, stepThreshold);
                   if (!winnerResult.isWinner) continue;
 
                   // Permanent dedup: check KV flag (no TTL)
@@ -1250,7 +1256,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     opportunities: variantAnalytics.opportunities,
                     ratio: winnerResult.ratio!,
                     winnerThreshold: winnerResult.winnerThreshold!,
-                    killThreshold: threshold,
+                    killThreshold: stepThreshold,
                     cm: cmName,
                     product: wsConfig.product,
                     isOff: isOffCampaign(campaign.name),
@@ -1289,7 +1295,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         sent: variantAnalytics.sent,
                         opportunities: variantAnalytics.opportunities,
                         ratio: winnerResult.ratio!.toFixed(1),
-                        threshold,
+                        threshold: stepThreshold,
                         effective_threshold: winnerResult.winnerThreshold!,
                         rule: `Winner: ratio ${winnerResult.ratio!.toFixed(1)}:1 <= winner threshold ${winnerResult.winnerThreshold!.toFixed(0)}:1`,
                       },
@@ -1314,7 +1320,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         variantAnalytics.sent,
                         variantAnalytics.opportunities,
                         winnerResult.ratio!,
-                        threshold,
+                        stepThreshold,
                         isOffCampaign(campaign.name),
                         leadsNote,
                       ), {

@@ -36,6 +36,25 @@ export const PRODUCT_THRESHOLDS: Record<Product, number> = {
 export const OFF_CAMPAIGN_BUFFER = 1.2;
 
 /**
+ * Step-position multipliers for kill thresholds. Follow-up steps naturally
+ * convert worse than step 1; multiplier gives them proportionally more runway.
+ * Applied to the resolved base threshold (after product/provider, before opp runway).
+ * 0-indexed to match Instantly step indices.
+ */
+export const STEP_MULTIPLIERS: Record<number, number> = {
+  0: 1.0,   // Step 1: no change
+  1: 1.3,   // Step 2: 30% more runway
+  2: 1.6,   // Step 3: 60% more runway
+  3: 2.0,   // Step 4: 2x runway
+};
+export const STEP_MULTIPLIER_CAP = 2.0; // Step 5+ use this cap
+
+/** Return the step-position multiplier for a given 0-indexed step. */
+export function getStepMultiplier(stepIndex: number): number {
+  return STEP_MULTIPLIERS[stepIndex] ?? STEP_MULTIPLIER_CAP;
+}
+
+/**
  * Runway extension for variants that have opportunities but exceed the base threshold.
  * Applied as a multiplier: effective_threshold = threshold * OPP_RUNWAY_MULTIPLIER.
  * Only applies when opportunities > 0. Zero-opp variants use the base threshold.

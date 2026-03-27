@@ -1,5 +1,5 @@
 import type { KillAction, LastVariantWarning, RescanEntry, LeadsCheckCandidate } from './types';
-import { VARIANT_LABELS, OFF_CAMPAIGN_BUFFER, WINNER_THRESHOLD_MULTIPLIER } from './config';
+import { VARIANT_LABELS, OFF_CAMPAIGN_BUFFER, WINNER_THRESHOLD_MULTIPLIER, getStepMultiplier } from './config';
 
 // ---------------------------------------------------------------------------
 // Notification types & grouped titles
@@ -150,7 +150,13 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 function formatOffAnnotation(threshold: number): string {
   const base = Math.round(threshold / OFF_CAMPAIGN_BUFFER);
-  return `\n\nℹ️ OFF campaign — threshold raised 20% (${base.toLocaleString()} → ${threshold.toLocaleString()})`;
+  return `\n\nℹ️ OFF campaign - threshold raised 20% (${base.toLocaleString()} -> ${threshold.toLocaleString()})`;
+}
+
+function formatStepAnnotation(stepIndex: number): string {
+  if (stepIndex === 0) return '';
+  const multiplier = getStepMultiplier(stepIndex);
+  return `\n\nStep ${stepIndex + 1} follow-up - threshold ${multiplier}x (later steps get more runway)`;
 }
 
 export async function postThreadedMessage(
@@ -210,6 +216,8 @@ ${ratioLine}`;
     message += formatOffAnnotation(threshold);
   }
 
+  message += formatStepAnnotation(stepIndex);
+
   return message;
 }
 
@@ -254,6 +262,8 @@ Action needed: Add 1+ new variants to this step, then manually turn off Variant 
     message += formatOffAnnotation(threshold);
   }
 
+  message += formatStepAnnotation(stepIndex);
+
   return message;
 }
 
@@ -282,6 +292,8 @@ This variant will be auto-disabled when it hits ${warning.threshold.toLocaleStri
   if (warning.isOff) {
     message += formatOffAnnotation(warning.threshold);
   }
+
+  message += formatStepAnnotation(stepIndex);
 
   return message;
 }
@@ -369,6 +381,8 @@ Ratio: ${ratio.toFixed(0)}:1 (threshold: ${killThreshold.toLocaleString()}:1 - $
   if (isOff) {
     message += formatOffAnnotation(killThreshold);
   }
+
+  message += formatStepAnnotation(stepIndex);
 
   if (leadsNote) {
     message += `\n\n${leadsNote}`;
