@@ -38,6 +38,7 @@ import {
   MAX_PERSISTENCE_CHECKS,
   EXEMPT_TTL_SECONDS,
   GHOST_NOTIFIED_TTL_SECONDS,
+  WARM_LEADS_THRESHOLD,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -544,8 +545,18 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     let totalWinnersDetected = 0;
     const dashboardWinners: WinnerEntry[] = [];
 
+    // Warm leads filter
+    let totalWarmLeadsSkipped = 0;
+
     // Candidates collected during Phase 1, processed in Phase 3
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
+
+    // Batch analytics by workspace — fetched once in Phase 1 (warm leads filter),
+    // reused in Phase 3 (leads depletion monitor). Avoids duplicate API calls.
+    const leadsBatchByWorkspace = new Map<string, Map<string, {
+      leads_count: number; contacted: number; completed_count: number;
+      bounced_count: number; unsubscribed_count: number;
+    }>>();
 
     // Dashboard state: collect BLOCKED, dry-run kills, warnings, and leads issues for Phase 5
     const dashboardBlocked: AuditEntry[] = [];
@@ -644,6 +655,16 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               ` in ${workspace.name}`,
           );
 
+          // Fetch batch analytics for warm leads detection + leads depletion (1 API call per workspace)
+          if (useDirectApi && !leadsBatchByWorkspace.has(workspace.id)) {
+            try {
+              const batchMap = await (instantly as InstantlyDirectApi).getBatchCampaignAnalytics(workspace.id);
+              leadsBatchByWorkspace.set(workspace.id, batchMap);
+            } catch (batchErr) {
+              console.warn(`[auto-turnoff] Batch analytics fetch failed for ${workspace.name}: ${batchErr}`);
+            }
+          }
+
           // Process campaigns with concurrency cap
           const campaignResults = await processWithConcurrency(activeCampaigns, concurrencyCap, async (campaign) => {
             const result: CampaignResult = {
@@ -675,6 +696,20 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
             // Skip OFF campaigns — already turned off, no need to evaluate or notify
             if (isOffCampaign(campaign.name)) return result;
+
+            // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD leads are curated
+            // warm lists, not cold outreach. Cold-outreach KPIs don't apply — skip entirely.
+            const wsBatch = leadsBatchByWorkspace.get(workspace.id);
+            if (wsBatch) {
+              const campAnalytics = wsBatch.get(campaign.id);
+              if (campAnalytics && campAnalytics.leads_count > 0 && campAnalytics.leads_count < WARM_LEADS_THRESHOLD) {
+                console.log(
+                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${campAnalytics.leads_count} leads < ${WARM_LEADS_THRESHOLD} threshold)`,
+                );
+                totalWarmLeadsSkipped++;
+                return result;
+              }
+            }
 
             // Per-CM dry run: evaluate and log but don't kill or notify
             const isDryRun = env.DRY_RUN === 'true' || DRY_RUN_CMS.has(cmName ?? '');
@@ -1540,6 +1575,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               ghostReEnables: 0,
               ghostDetails: null,
               winnersDetected: totalWinnersDetected,
+              warmLeadsSkipped: totalWarmLeadsSkipped,
               dryRun: isDryRun,
             };
             earlySummaryRowId = await writeRunSummaryToSupabase(sb, checkpointSummary).catch((err) => {
@@ -1586,6 +1622,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           ghostReEnables: 0,
           ghostDetails: null,
           winnersDetected: totalWinnersDetected,
+          warmLeadsSkipped: totalWarmLeadsSkipped,
           dryRun: isDryRun,
         };
 
@@ -1975,17 +2012,13 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           console.log(`[auto-turnoff] Leads check: evaluating ${leadsCheckCandidates.length} campaigns`);
         }
 
-        // Batch fetch analytics for all workspaces with candidates (1 API call per workspace).
-        // In direct mode, this replaces per-campaign MCP count_leads calls (MCP SSE fails from CF edge).
-        const leadsBatchByWorkspace = new Map<string, Map<string, {
-          leads_count: number; contacted: number; completed_count: number;
-          bounced_count: number; unsubscribed_count: number;
-        }>>();
-
+        // Batch analytics already fetched in Phase 1 (warm leads filter) and stored
+        // in leadsBatchByWorkspace. Fetch any missing workspaces (e.g. if Phase 1 fetch failed).
         if (useDirectApi && leadsCheckCandidates.length > 0) {
           const directApi = instantly as InstantlyDirectApi;
           const workspaceIds = [...new Set(leadsCheckCandidates.map((c) => c.workspaceId))];
           for (const wsId of workspaceIds) {
+            if (leadsBatchByWorkspace.has(wsId)) continue; // already cached from Phase 1
             try {
               const batchMap = await directApi.getBatchCampaignAnalytics(wsId);
               leadsBatchByWorkspace.set(wsId, batchMap);
@@ -2598,7 +2631,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
       // 7. LOG RUN SUMMARY
       const durationMs = Date.now() - runStart;
       console.log(
-        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} winners=${totalWinnersDetected} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
+        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} warmSkipped=${totalWarmLeadsSkipped} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} winners=${totalWinnersDetected} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
       );
 
       // 8. WRITE FINAL RUN SUMMARY (updates early summary with Phase 2-7 data)
@@ -2624,6 +2657,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
         ghostReEnables: ghostCount,
         ghostDetails: ghostDetails.length > 0 ? ghostDetails : null,
         winnersDetected: totalWinnersDetected,
+        warmLeadsSkipped: totalWarmLeadsSkipped,
         dryRun: isDryRun,
       };
 

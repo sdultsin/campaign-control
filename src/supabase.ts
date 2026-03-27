@@ -101,6 +101,7 @@ export async function writeRunSummaryToSupabase(
     ghost_re_enables: summary.ghostReEnables,
     ghost_details: summary.ghostDetails ?? null,
     winners_detected: summary.winnersDetected,
+    warm_leads_skipped: summary.warmLeadsSkipped,
     dry_run: summary.dryRun,
     worker_version: WORKER_VERSION,
   }).select('id').single();
@@ -143,6 +144,7 @@ export async function updateRunSummaryInSupabase(
     ghost_re_enables: summary.ghostReEnables,
     ghost_details: summary.ghostDetails ?? null,
     winners_detected: summary.winnersDetected,
+    warm_leads_skipped: summary.warmLeadsSkipped,
     dry_run: summary.dryRun,
     worker_version: WORKER_VERSION,
   }).eq('id', rowId);

@@ -154,6 +154,14 @@ export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
 export const LEADS_EXHAUSTED_THRESHOLD = 0;
 export const LEADS_WARNING_THRESHOLD = 5000;
 
+/**
+ * Campaigns with fewer than this many leads are "warm leads" campaigns.
+ * Warm campaigns are excluded from ALL CC scanning — no variant eval,
+ * no kills, no leads monitoring. These are small, curated lists sent
+ * to known contacts; cold-outreach KPIs are not applicable.
+ */
+export const WARM_LEADS_THRESHOLD = 1000;
+
 // Kill persistence monitor: max KV keys to check per run
 export const MAX_PERSISTENCE_CHECKS = 100;
 

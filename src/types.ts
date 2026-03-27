@@ -288,6 +288,7 @@ export interface RunSummary {
   ghostReEnables: number;
   ghostDetails: GhostDetail[] | null;
   winnersDetected: number;
+  warmLeadsSkipped: number;
   dryRun: boolean;
 }
 
