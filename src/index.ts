@@ -415,7 +415,11 @@ export default {
         processedAt: new Date().toISOString(),
       }));
 
-      await executeScheduledRun(env);
+      try {
+        await executeScheduledRun(env);
+      } catch (err) {
+        console.error(`[queue] On-demand run failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       message.ack();
     }
   },
