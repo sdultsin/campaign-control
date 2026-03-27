@@ -38,7 +38,6 @@ import {
   MAX_PERSISTENCE_CHECKS,
   EXEMPT_TTL_SECONDS,
   GHOST_NOTIFIED_TTL_SECONDS,
-  LAST_VARIANT_WARNING_PCT,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -791,10 +790,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                 return result;
               }
 
-              // f. Quick gate: skip if no variant has reached warning zone (80% of threshold)
-              const warningGate = threshold * LAST_VARIANT_WARNING_PCT;
-              const anyApproaching = allAnalytics.some((a) => a.sent >= warningGate);
-              if (!anyApproaching) {
+              // f. Quick gate: skip kill evaluation if no variant has reached the threshold
+              const anyAboveThreshold = allAnalytics.some((a) => a.sent >= threshold);
+              if (!anyAboveThreshold) {
                 return result;
               }
 
