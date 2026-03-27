@@ -136,7 +136,7 @@ export const CM_MONITOR_CHANNELS: Record<string, string> = {
 // Set to 0 for unlimited.
 export const MAX_KILLS_PER_RUN = 10;
 
-export const LAST_VARIANT_WARNING_PCT = 0.8;
+export const LAST_VARIANT_WARNING_PCT = 0.65;
 export const WARNING_DEDUP_TTL_SECONDS = 86400;
 export const KILL_DEDUP_TTL_SECONDS = 604800; // 7 days (same as blocked)
 // Secondary rescan: how long to wait before rechecking disabled variants
