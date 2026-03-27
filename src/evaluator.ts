@@ -96,7 +96,7 @@ export function evaluateStep(
 
 /**
  * Check ALL active variants in a step that are approaching the kill threshold.
- * Returns a warning for every active variant that has consumed >= 65% of threshold sends
+ * Returns a warning for every active variant that has consumed >= 80% of threshold sends
  * but hasn't crossed it yet (those that crossed are handled by evaluateStep as kills).
  * Called AFTER evaluateStep — only for variants not already killed or blocked.
  */
