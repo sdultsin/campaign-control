@@ -179,7 +179,7 @@ export const LEADS_WARNING_THRESHOLD = 5000;
  * no kills, no leads monitoring. These are small, curated lists sent
  * to known contacts; cold-outreach KPIs are not applicable.
  */
-export const WARM_LEADS_THRESHOLD = 1000;
+export const WARM_LEADS_THRESHOLD = 5000;
 
 // Kill persistence monitor: max KV keys to check per run
 export const MAX_PERSISTENCE_CHECKS = 100;
