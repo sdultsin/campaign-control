@@ -66,9 +66,12 @@ async function acquireLock(kv: KVNamespace): Promise<boolean> {
   const existing = await kv.get('auto-turnoff-lock');
   if (existing) {
     const lockTime = parseInt(existing, 10);
-    if (Date.now() - lockTime < 30 * 60 * 1000) return false;
+    if (Date.now() - lockTime < 16 * 60 * 1000) return false;
   }
-  await kv.put('auto-turnoff-lock', Date.now().toString());
+  // TTL = 20 min safety net. If the Worker crashes before releaseLock() in
+  // the finally block (runtime kill, OOM, etc.), KV auto-expires the key so
+  // queue retries and the next cron aren't permanently blocked.
+  await kv.put('auto-turnoff-lock', Date.now().toString(), { expirationTtl: 1200 });
   return true;
 }
 
@@ -409,7 +412,7 @@ export default {
     return new Response('Auto Turn-Off Worker. Use /__trigger to queue a manual run, /__baseline to capture a baseline.', { status: 200 });
   },
 
-  async queue(batch: MessageBatch<{ type: string; triggeredAt: string }>, env: Env): Promise<void> {
+  async queue(batch: MessageBatch<{ type: string; triggeredAt: string }>, env: Env, ctx: ExecutionContext): Promise<void> {
     for (const message of batch.messages) {
       console.log(JSON.stringify({
         event: 'on_demand_trigger',
@@ -418,7 +421,9 @@ export default {
       }));
 
       try {
-        await executeScheduledRun(env);
+        const runPromise = executeScheduledRun(env);
+        ctx.waitUntil(runPromise);
+        await runPromise;
       } catch (err) {
         console.error(`[queue] On-demand run failed: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -489,7 +494,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     // 1. ACQUIRE LOCK
     const locked = await acquireLock(env.KV);
     if (!locked) {
-      console.log('[auto-turnoff] Skipping: previous run still active (lock held < 30 min)');
+      console.log('[auto-turnoff] Skipping: previous run still active (lock held < 16 min)');
       return;
     }
 
@@ -700,7 +705,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             if (isOffCampaign(campaign.name)) return result;
 
             // Skip OLD (retired/archived) campaigns — CMs prefix with "OLD" to mark inactive
-            if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\s]*OLD[\s\-]/iu.test(campaign.name)) return result;
+            if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\s]*OLD([\s\-]|$)/iu.test(campaign.name)) return result;
 
             // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD lifetime contacted
             // are curated warm lists (no-shows, opps, form-sent), not cold outreach.

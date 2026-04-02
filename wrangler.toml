@@ -26,4 +26,4 @@ binding = "ON_DEMAND_QUEUE"
 [[queues.consumers]]
 queue = "cc-on-demand"
 max_batch_size = 1
-max_retries = 0
+max_retries = 2
