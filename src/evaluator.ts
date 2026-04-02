@@ -128,8 +128,15 @@ export function checkVariantWarnings(
     const pctConsumed = (sent / threshold) * 100;
     if (pctConsumed < LAST_VARIANT_WARNING_PCT * 100) continue;
 
-    // Skip variants already past threshold (they'd be kills, not warnings)
-    if (sent >= threshold) continue;
+    // Only skip variants that will actually be killed by evaluateVariant.
+    // Variants past the raw threshold but KEPT by opp-runway ratio need warnings.
+    if (sent >= threshold) {
+      if (opportunities === 0) continue;  // Will be killed (0 opps past threshold)
+      const ratio = sent / opportunities;
+      const effectiveKillThreshold = threshold * OPP_RUNWAY_MULTIPLIER;
+      if (ratio > effectiveKillThreshold) continue;  // Will be killed (ratio exceeded)
+      // Variant is past threshold but kept alive by opp ratio - generate warning
+    }
 
     warnings.push({
       warn: true,

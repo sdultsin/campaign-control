@@ -62,8 +62,15 @@ export function resolveCmName(
     return filtered[filtered.length - 1].trim().toUpperCase();
   }
 
-  // No parenthetical match — use workspace default if available
-  if (workspaceConfig.defaultCm) return workspaceConfig.defaultCm;
+  // In dedicated workspaces, skip campaigns that clearly don't belong to the default CM.
+  // "No Show" campaigns are follow-up campaigns managed by the IM, not the CM.
+  if (workspaceConfig.defaultCm) {
+    const nameUpper = campaignName.toUpperCase();
+    if (nameUpper.includes('NO SHOW') || nameUpper.includes('NOSHOW')) {
+      return null;
+    }
+    return workspaceConfig.defaultCm;
+  }
 
   // Fallback: check if campaign name contains a known CM name (e.g. "- Alex" without parentheses)
   const knownCms = Object.keys(CM_CHANNEL_MAP);

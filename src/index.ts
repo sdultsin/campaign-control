@@ -699,6 +699,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             // Skip OFF campaigns — already turned off, no need to evaluate or notify
             if (isOffCampaign(campaign.name)) return result;
 
+            // Skip OLD (retired/archived) campaigns — CMs prefix with "OLD" to mark inactive
+            if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\s]*OLD[\s\-]/iu.test(campaign.name)) return result;
+
             // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD lifetime contacted
             // are curated warm lists (no-shows, opps, form-sent), not cold outreach.
             // Cold-outreach KPIs don't apply — skip entirely.
