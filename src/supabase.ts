@@ -295,6 +295,12 @@ export async function upsertDashboardItem(
   }
 }
 
+// Item types that represent permanent actions (kills, freezes). These should
+// never be auto-resolved because subsequent runs won't re-detect them — the
+// variant is already disabled in Instantly. Only explicit CM action (dismiss
+// from dashboard) should clear these.
+const PERMANENT_ITEM_TYPES: Set<string> = new Set(['DISABLED', 'STEP_FROZEN']);
+
 export async function resolveStaleItems(
   sb: SupabaseClient,
   cm: string,
@@ -315,6 +321,14 @@ export async function resolveStaleItems(
 
   let resolved = 0;
   for (const item of activeItems) {
+    // Permanent action items (DISABLED, STEP_FROZEN) are never auto-resolved.
+    // Once a variant is killed or a step is frozen, subsequent runs won't
+    // re-detect it (it's already disabled in Instantly), so it will never
+    // appear in activeKeys. Auto-resolving these would erase the record
+    // on the very next run. They should only be resolved by explicit CM
+    // action (dismiss from dashboard).
+    if (PERMANENT_ITEM_TYPES.has(item.item_type as string)) continue;
+
     const key = `${item.campaign_id}:${item.item_type}:${item.step ?? 'null'}:${item.variant ?? 'null'}`;
     if (!activeKeys.has(key)) {
       // This item was not found in the current scan - resolve it

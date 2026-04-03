@@ -12,6 +12,15 @@
 - **Files involved:** `src/index.ts` (buildDashboardState call, ~line 1400), `src/dashboard-state.ts` (buildDashboardState function, dryRunKills parameter)
 - **How it was detected:** Manual audit of 6am run comparing audit_log kill count vs dashboard_items DISABLED count
 
+### 1b. Dashboard Resolve Gap (variant of #1)
+- **Symptoms:** DISABLED and STEP_FROZEN dashboard_items created correctly but resolved_at set on the very next run (4-10 minutes later). All permanent action items disappear from the CM dashboard within one scan cycle.
+- **Root cause:** `resolveStaleItems()` in `supabase.ts` iterates all active (unresolved) dashboard_items for a CM and resolves any whose key is not in the current run's `activeKeys` set. DISABLED items from prior runs are never in `activeKeys` because the variant is already disabled in Instantly and won't be re-evaluated/re-killed. Same applies to STEP_FROZEN items. So permanent action records get auto-resolved by the next run.
+- **Investigation path:** Query: `SELECT id, item_type, created_at, resolved_at FROM dashboard_items WHERE item_type IN ('DISABLED', 'STEP_FROZEN') AND resolved_at IS NOT NULL AND resolved_at - created_at < interval '1 hour' AND worker_version = 'v2'`. Short-lived DISABLED/STEP_FROZEN items indicate this bug.
+- **Files involved:** `src/supabase.ts` (resolveStaleItems ~line 298), `src/dashboard-state.ts` (buildDashboardState - activeKeys population)
+- **Fix:** Added `PERMANENT_ITEM_TYPES` set (`DISABLED`, `STEP_FROZEN`) checked at the top of the resolve loop. Permanent items are skipped entirely by auto-resolve; only explicit CM dismissal clears them.
+- **How it was detected:** 4 kills at 13:37-13:40 UTC created dashboard_items at 13:42. Next run at 13:43 resolved all 4 at 13:47:58 because activeKeys for DISABLED was empty.
+- **Bug class pattern:** **Permanent action items treated as transient conditions.** Any dashboard item type that represents a one-time action (not a recurring condition) must be excluded from auto-resolve. Transient types (BLOCKED, APPROACHING, LEADS_WARNING, LEADS_EXHAUSTED, WINNING) are correctly auto-resolved because they are re-detected every run while the condition persists.
+
 ### 2. Variant Dedup Failure (c90bbb5 -> 248cba1, deployed in 2c3a98b)
 - **Symptoms:** Multiple dashboard_items for same campaign/step with different variants were colliding. When 2+ variants in the same step were both winners, only one row was stored. Second variant's context data overwrote the first, but variant and variant_label fields were not updated. Row showed first variant's label with last variant's numbers.
 - **Root cause:** Three layers enforced one-row-per-step without considering variant: (1) Unique index on dashboard_items: `(cm, campaign_id, item_type, COALESCE(step, -1))` - no variant column (2) Upsert match in `supabase.ts` `upsertDashboardItem()`: queried by (cm, campaign_id, item_type, step) - no variant filter (3) Active keys in `dashboard-state.ts` `addIssue()`: key format was `${campaign_id}:${item_type}:${step}` - no variant (4) Resolve keys in `supabase.ts` `resolveStaleItems()`: same key format - no variant
