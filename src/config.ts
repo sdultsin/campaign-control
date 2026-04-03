@@ -190,6 +190,9 @@ export const EXEMPT_TTL_SECONDS = 7776000; // 90 days
 // Ghost Slack notification dedup TTL (90 days). Fires once per ghost.
 export const GHOST_NOTIFIED_TTL_SECONDS = 7776000; // 90 days
 
+// Uniform underperformance: dedup TTL for the STEP_NEEDS_COPY notification
+export const STEP_NEEDS_COPY_DEDUP_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days
+
 // Per-item Slack notifications are intentionally suppressed (CM Supervision Console).
 // When true, checkSlackDelivery() returns PASS instead of flagging reply_success=false rows.
 // Flip to false when per-item Slack is re-enabled.

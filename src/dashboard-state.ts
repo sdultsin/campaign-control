@@ -38,6 +38,11 @@ export async function buildDashboardState(
   dryRunKills: AuditEntry[] = [],
   winners: WinnerEntry[] = [],
   approaching: WarningDetail[] = [],
+  frozenSteps: Array<{
+    campaignId: string; campaignName: string; workspaceId: string; workspaceName: string;
+    stepIndex: number; cm: string | null; frozenAt: string; variantCount: number;
+    reenabledVariants: number[]; reason: string;
+  }> = [],
 ): Promise<{ upserted: number; resolved: number }> {
   // Collect all detected issues, keyed by CM
   const issuesByCm = new Map<string, DetectedIssue[]>();
@@ -196,6 +201,29 @@ export async function buildDashboardState(
         pct_consumed: entry.pctConsumed,
         opportunities: entry.opportunities,
         is_off: entry.isOff,
+      },
+    });
+  }
+
+  // STEP_FROZEN -> CRITICAL dashboard items (uniform underperformance - all variants failed)
+  for (const entry of frozenSteps) {
+    if (!entry.cm) continue;
+    addIssue({
+      item_type: 'STEP_FROZEN',
+      severity: 'CRITICAL',
+      cm: entry.cm,
+      campaign_id: entry.campaignId,
+      campaign_name: entry.campaignName,
+      workspace_id: entry.workspaceId,
+      workspace_name: entry.workspaceName,
+      step: entry.stepIndex + 1,
+      variant: null,
+      variant_label: null,
+      context: {
+        frozen_at: entry.frozenAt,
+        variant_count: entry.variantCount,
+        reenabled_variants: entry.reenabledVariants,
+        reason: entry.reason,
       },
     });
   }

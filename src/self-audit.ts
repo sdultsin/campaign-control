@@ -734,6 +734,7 @@ async function buildKvSummary(kv: KVNamespace): Promise<KvSummary> {
     ghost_notified_keys: await countKvPrefix(kv, 'ghost-notified:'),
     kill_keys: await countKvPrefix(kv, 'kill:'),
     winner_notified_keys: await countKvPrefix(kv, 'winner-notified:'),
+    step_frozen_keys: await countKvPrefix(kv, 'step-frozen:'),
   };
 }
 

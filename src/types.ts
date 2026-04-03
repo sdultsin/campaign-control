@@ -228,7 +228,7 @@ export interface WinnerEntry {
 
 export interface AuditEntry {
   timestamp: string;
-  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED';
+  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED' | 'STEP_FROZEN';
   workspace: string;
   workspaceId: string;
   campaign: string;
@@ -289,6 +289,8 @@ export interface RunSummary {
   ghostDetails: GhostDetail[] | null;
   winnersDetected: number;
   warmLeadsSkipped: number;
+  stepsFrozen: number;
+  freezeReEnables: number;
   dryRun: boolean;
 }
 
@@ -416,11 +418,20 @@ export interface CampaignResult {
     steps: number;
     health: CampaignHealthEntry;
   } | null;
+  /** Frozen steps (uniform underperformance detected — all variants equally bad) */
+  frozenSteps: Array<{
+    stepIndex: number;
+    variantCount: number;
+    reenabledVariants: number[];
+    avgReplyRate: number;
+    totalSent: number;
+    totalOpps: number;
+  }>;
 }
 
 // --- Dashboard state types ---
 
-export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'WINNING';
+export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'STEP_FROZEN' | 'WINNING';
 export type DashboardSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 export interface DashboardItem {
@@ -482,6 +493,7 @@ export interface KvSummary {
   ghost_notified_keys: number;
   kill_keys: number;
   winner_notified_keys: number;
+  step_frozen_keys: number;
 }
 
 export interface TrailingAvg {

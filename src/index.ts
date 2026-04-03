@@ -9,6 +9,7 @@ import {
   formatWarningDetails, formatRescanDetails,
   formatLeadsWarningDetails, formatLeadsExhaustedDetails,
   formatWinnerDetails, formatAllVariantsWinning, formatCampaignWinnerRollup,
+  formatStepNeedsCopyDetails,
   sendMorningDigest, postThreadedMessage,
 } from './slack';
 import type { NotificationMeta } from './slack';
@@ -40,6 +41,7 @@ import {
   EXEMPT_TTL_SECONDS,
   GHOST_NOTIFIED_TTL_SECONDS,
   WARM_LEADS_THRESHOLD,
+  STEP_NEEDS_COPY_DEDUP_TTL_SECONDS,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -571,6 +573,15 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     const dashboardApproaching: WarningDetail[] = [];
     const dashboardLeadsExhausted: LeadsAuditEntry[] = [];
     const dashboardLeadsWarnings: LeadsAuditEntry[] = [];
+    const dashboardFrozenSteps: Array<{
+      campaignId: string; campaignName: string; workspaceId: string; workspaceName: string;
+      stepIndex: number; cm: string | null; frozenAt: string; variantCount: number;
+      reenabledVariants: number[]; reason: string;
+    }> = [];
+
+    // Freeze counters
+    let totalStepsFrozen = 0;
+    let totalFreezeReEnables = 0;
 
     // Notification collector — groups Slack messages by (channel, type)
     const collector = new NotificationCollector();
@@ -689,6 +700,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               winnersDetected: 0,
               leadsCandidate: null,
               snapshot: null,
+              frozenSteps: [],
             };
 
             // Resolve CM early — needed for pilot filter before expensive API calls
@@ -865,6 +877,52 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   continue;
                 }
 
+                // --- FREEZE CHECK (Step 4a): skip frozen steps unless CM added new variants ---
+                {
+                  const freezeKey = `step-frozen:${campaign.id}:${stepIndex}`;
+                  const freezeRaw = await env.KV.get(freezeKey);
+                  if (freezeRaw) {
+                    try {
+                      const frozen = JSON.parse(freezeRaw) as { variantCount: number; frozenAt: string };
+                      if (stepDetail.variants.length <= frozen.variantCount) {
+                        console.log(
+                          `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" is frozen (${frozen.variantCount} variants, frozen at ${frozen.frozenAt}) — skipping`,
+                        );
+                        // Add to dashboard so STEP_FROZEN item persists
+                        result.frozenSteps.push({
+                          stepIndex,
+                          variantCount: frozen.variantCount,
+                          reenabledVariants: [],
+                          avgReplyRate: 0,
+                          totalSent: 0,
+                          totalOpps: 0,
+                        });
+                        dashboardFrozenSteps.push({
+                          campaignId: campaign.id,
+                          campaignName: campaign.name,
+                          workspaceId: workspace.id,
+                          workspaceName: workspace.name,
+                          stepIndex,
+                          cm: cmName,
+                          frozenAt: frozen.frozenAt,
+                          variantCount: frozen.variantCount,
+                          reenabledVariants: [],
+                          reason: 'uniform_underperformance',
+                        });
+                        continue;
+                      }
+                      // CM added new variants — unfreeze
+                      await env.KV.delete(freezeKey);
+                      console.log(
+                        `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" unfrozen — CM added variants (was ${frozen.variantCount}, now ${stepDetail.variants.length})`,
+                      );
+                    } catch {
+                      // Corrupt freeze key — delete and proceed
+                      await env.KV.delete(freezeKey);
+                    }
+                  }
+                }
+
                 const stepAnalytics = primaryAnalytics.filter(
                   (a) => parseInt(a.step, 10) === stepIndex,
                 );
@@ -878,6 +936,191 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   stepIndex,
                   stepThreshold,
                 );
+
+                // --- UNIFORM UNDERPERFORMANCE DETECTION (Step 4b) ---
+                {
+                  // Count active non-SKIP variants (sent >= stepThreshold mirrors SKIP gate in evaluateVariant)
+                  let activeNonSkipCount = 0;
+                  for (let vi = 0; vi < stepDetail.variants.length; vi++) {
+                    if (stepDetail.variants[vi].v_disabled) continue;
+                    const vRow = stepAnalytics.find(a => parseInt(a.variant, 10) === vi);
+                    if (vRow && vRow.sent >= stepThreshold) activeNonSkipCount++;
+                  }
+                  // killCandidateCount = confirmed kills + blocked (the last-variant that would have been killed)
+                  const killCandidateCount = kills.length + (blocked ? 1 : 0);
+
+                  if (activeNonSkipCount > 0 && activeNonSkipCount === killCandidateCount) {
+                    // --- FREEZE HANDLER (Step 4c) ---
+                    console.log(
+                      `[auto-turnoff] UNIFORM UNDERPERFORMANCE: Step ${stepIndex + 1} of "${campaign.name}" — all ${activeNonSkipCount} evaluated variants are KILL_CANDIDATE`,
+                    );
+
+                    // 1. FIND PREVIOUSLY KILLED VARIANTS
+                    const reenableList: number[] = [];
+                    for (let vi = 0; vi < stepDetail.variants.length; vi++) {
+                      if (!stepDetail.variants[vi].v_disabled) continue;
+                      const killKey = `kill:${campaign.id}:${stepIndex}:${vi}`;
+                      const rescanKey = `rescan:${campaign.id}:${stepIndex}:${vi}`;
+                      const hasKill = await env.KV.get(killKey);
+                      const hasRescan = await env.KV.get(rescanKey);
+                      if (hasKill || hasRescan) {
+                        reenableList.push(vi);
+                      }
+                    }
+
+                    // 2. DELETE KV KEYS FOR RE-ENABLED VARIANTS (before re-enabling — Error Rule 2)
+                    for (const vi of reenableList) {
+                      await env.KV.delete(`kill:${campaign.id}:${stepIndex}:${vi}`).catch(() => {});
+                      await env.KV.delete(`rescan:${campaign.id}:${stepIndex}:${vi}`).catch(() => {});
+                    }
+
+                    // 3. RE-ENABLE VARIANTS VIA INSTANTLY API
+                    let actualReenabled = reenableList.length;
+                    if (reenableList.length > 0) {
+                      if (isDryRun) {
+                        console.log(
+                          `[DRY RUN] Freeze re-enable: would re-enable variants [${reenableList.join(', ')}] in Step ${stepIndex + 1} of "${campaign.name}"`,
+                        );
+                      } else {
+                        try {
+                          // Batch re-enable: clone sequences, set v_disabled = false, single API call
+                          const cloned = structuredClone(campaignDetail.sequences);
+                          for (const vi of reenableList) {
+                            const v = cloned?.[0]?.steps?.[stepIndex]?.variants?.[vi];
+                            if (v) v.v_disabled = false;
+                          }
+                          if (instantly instanceof InstantlyDirectApi) {
+                            await instantly.updateCampaign(workspace.id, campaign.id, { sequences: cloned });
+                          } else {
+                            await mcp.callTool('update_campaign', {
+                              workspace_id: workspace.id,
+                              campaign_id: campaign.id,
+                              updates: { sequences: cloned },
+                            });
+                          }
+                          // Verify
+                          const verified = await instantly.getCampaignDetails(workspace.id, campaign.id);
+                          for (const vi of reenableList) {
+                            const v = verified.sequences?.[0]?.steps?.[stepIndex]?.variants?.[vi];
+                            if (v?.v_disabled !== false) {
+                              console.error(`[auto-turnoff] Freeze re-enable verification failed for variant ${vi} in Step ${stepIndex + 1} of "${campaign.name}"`);
+                            }
+                          }
+                          console.log(
+                            `[auto-turnoff] Freeze re-enabled ${reenableList.length} variants [${reenableList.join(', ')}] in Step ${stepIndex + 1} of "${campaign.name}"`,
+                          );
+                        } catch (reenableErr) {
+                          console.error(`[auto-turnoff] Freeze re-enable failed for Step ${stepIndex + 1} of "${campaign.name}": ${reenableErr}`);
+                          actualReenabled = 0; // For accurate notification/audit
+                        }
+                      }
+                    }
+
+                    // Compute aggregate stats for notification
+                    let totalSent = 0, totalOpps = 0;
+                    for (const row of stepAnalytics) {
+                      const vi = parseInt(row.variant, 10);
+                      if (stepDetail.variants[vi]?.v_disabled && !reenableList.includes(vi)) continue;
+                      totalSent += row.sent;
+                      totalOpps += row.opportunities;
+                    }
+                    const avgReplyRate = totalSent > 0 ? (totalOpps / totalSent) * 100 : 0;
+
+                    // 4. WRITE FREEZE KEY
+                    const frozenAt = new Date().toISOString();
+                    await env.KV.put(`step-frozen:${campaign.id}:${stepIndex}`, JSON.stringify({
+                      frozenAt,
+                      variantCount: stepDetail.variants.length,
+                      reenabledVariants: actualReenabled > 0 ? reenableList : [],
+                      reason: 'uniform_underperformance',
+                    }));
+
+                    // 5. CHECK NOTIFICATION DEDUP, THEN WRITE
+                    const needsCopyDedupKey = `step-needs-copy:${campaign.id}:${stepIndex}`;
+                    const alreadyNotified = await env.KV.get(needsCopyDedupKey);
+
+                    // 6. COLLECT NOTIFICATION (only if dedup check passed)
+                    if (!alreadyNotified) {
+                      await env.KV.put(needsCopyDedupKey, '1', { expirationTtl: STEP_NEEDS_COPY_DEDUP_TTL_SECONDS });
+                      collector.add(channelId, 'STEP_NEEDS_COPY', formatStepNeedsCopyDetails(
+                        campaign.name,
+                        stepIndex,
+                        activeNonSkipCount,
+                        actualReenabled,
+                        avgReplyRate,
+                        totalSent,
+                        totalOpps,
+                      ), {
+                        timestamp: frozenAt,
+                        notification_type: 'STEP_NEEDS_COPY',
+                        campaign_id: campaign.id,
+                        campaign_name: campaign.name,
+                        workspace_id: workspace.id,
+                        workspace_name: workspace.name,
+                        cm: cmName,
+                        step: stepIndex + 1,
+                        variant: null,
+                        variant_label: null,
+                        dry_run: isDryRun,
+                      });
+                    }
+
+                    // 7. WRITE AUDIT ENTRY (dual-write)
+                    const freezeAudit: AuditEntry = {
+                      timestamp: frozenAt,
+                      action: 'STEP_FROZEN',
+                      workspace: workspace.name,
+                      workspaceId: workspace.id,
+                      campaign: campaign.name,
+                      campaignId: campaign.id,
+                      step: stepIndex + 1,
+                      variant: -1,
+                      variantLabel: 'ALL',
+                      cm: cmName,
+                      product: wsConfig.product,
+                      trigger: {
+                        sent: totalSent,
+                        opportunities: totalOpps,
+                        ratio: totalOpps === 0 ? 'Infinity' : (totalSent / totalOpps).toFixed(1),
+                        threshold: stepThreshold,
+                        rule: `All ${activeNonSkipCount} variants are KILL_CANDIDATE (uniform underperformance)`,
+                      },
+                      safety: { survivingVariants: activeNonSkipCount, notification: null },
+                      dryRun: isDryRun,
+                    };
+                    await writeAuditLog(env.KV, freezeAudit).catch((err) =>
+                      console.error(`[auto-turnoff] Failed to write STEP_FROZEN audit log: ${err}`),
+                    );
+                    if (sb) await writeAuditLogToSupabase(sb, freezeAudit).catch((err) =>
+                      console.error(`[supabase] STEP_FROZEN audit write failed: ${err}`),
+                    );
+
+                    // 8. ADD FREEZE DATA TO CAMPAIGN RESULT + DASHBOARD
+                    result.frozenSteps.push({
+                      stepIndex,
+                      variantCount: activeNonSkipCount,
+                      reenabledVariants: actualReenabled > 0 ? reenableList : [],
+                      avgReplyRate,
+                      totalSent,
+                      totalOpps,
+                    });
+                    dashboardFrozenSteps.push({
+                      campaignId: campaign.id,
+                      campaignName: campaign.name,
+                      workspaceId: workspace.id,
+                      workspaceName: workspace.name,
+                      stepIndex,
+                      cm: cmName,
+                      frozenAt,
+                      variantCount: activeNonSkipCount,
+                      reenabledVariants: actualReenabled > 0 ? reenableList : [],
+                      reason: 'uniform_underperformance',
+                    });
+
+                    // 9. SKIP REMAINING STEP LOGIC
+                    continue;
+                  }
+                }
 
                 // Build set of all kill indices for accurate surviving count
                 const allKillIndices = new Set(kills.map(k => k.variantIndex));
@@ -1518,6 +1761,12 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             totalWinnersDetected += r.winnersDetected;
             if (r.leadsCandidate) leadsCheckCandidates.push(r.leadsCandidate);
 
+            // Freeze counters (dashboardFrozenSteps already populated inside callback)
+            for (const fs of r.frozenSteps) {
+              totalStepsFrozen++;
+              totalFreezeReEnables += fs.reenabledVariants.length;
+            }
+
             if (r.snapshot) {
               snapshotAcc.totalCampaigns++;
               snapshotAcc.totalSteps += r.snapshot.steps;
@@ -1593,6 +1842,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               ghostDetails: null,
               winnersDetected: totalWinnersDetected,
               warmLeadsSkipped: totalWarmLeadsSkipped,
+              stepsFrozen: totalStepsFrozen,
+              freezeReEnables: totalFreezeReEnables,
               dryRun: isDryRun,
             };
             earlySummaryRowId = await writeRunSummaryToSupabase(sb, checkpointSummary).catch((err) => {
@@ -1640,6 +1891,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           ghostDetails: null,
           winnersDetected: totalWinnersDetected,
           warmLeadsSkipped: totalWarmLeadsSkipped,
+          stepsFrozen: totalStepsFrozen,
+          freezeReEnables: totalFreezeReEnables,
           dryRun: isDryRun,
         };
 
@@ -2573,6 +2826,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             dashboardDryRunKills,
             dashboardWinners,
             dashboardApproaching,
+            dashboardFrozenSteps,
           );
           console.log(`[auto-turnoff] Dashboard state: ${dashResult.upserted} upserted, ${dashResult.resolved} resolved`);
         } catch (dashErr) {
@@ -2648,7 +2902,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
       // 7. LOG RUN SUMMARY
       const durationMs = Date.now() - runStart;
       console.log(
-        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} warmSkipped=${totalWarmLeadsSkipped} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} winners=${totalWinnersDetected} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
+        `[auto-turnoff] Run complete — workspaces=${totalWorkspaces} campaigns=${totalCampaignsEvaluated} warmSkipped=${totalWarmLeadsSkipped} killed=${totalVariantsKilled} deferred=${totalVariantsDeferred} blocked=${totalVariantsBlocked} killsPaused=${totalVariantsKillsPaused} warned=${totalVariantsWarned} winners=${totalWinnersDetected} frozen=${totalStepsFrozen} freezeReEnables=${totalFreezeReEnables} rescan=${totalRescanChecked} reEnabled=${totalRescanReEnabled} expired=${totalExpired} cmOverride=${totalCmOverride} errors=${totalErrors} leads: checked=${totalLeadsChecked} leadsErrors=${leadsCheckErrors} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered} ${durationMs}ms`,
       );
 
       // 8. WRITE FINAL RUN SUMMARY (updates early summary with Phase 2-7 data)
@@ -2675,6 +2929,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
         ghostDetails: ghostDetails.length > 0 ? ghostDetails : null,
         winnersDetected: totalWinnersDetected,
         warmLeadsSkipped: totalWarmLeadsSkipped,
+        stepsFrozen: totalStepsFrozen,
+        freezeReEnables: totalFreezeReEnables,
         dryRun: isDryRun,
       };
 

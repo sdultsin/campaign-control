@@ -12,7 +12,8 @@ export type SlackNotificationType =
   | 'RESCAN_RE_ENABLED'
   | 'LEADS_EXHAUSTED'
   | 'LEADS_WARNING'
-  | 'WINNER';
+  | 'WINNER'
+  | 'STEP_NEEDS_COPY';
 
 const GROUP_TITLES: Record<SlackNotificationType, (count: number) => string> = {
   KILL: (n) => `:rotating_light: Variants Automatically Disabled (${n})`,
@@ -22,6 +23,7 @@ const GROUP_TITLES: Record<SlackNotificationType, (count: number) => string> = {
   LEADS_EXHAUSTED: (n) => `:red_circle: Leads Exhausted (${n} campaign${n === 1 ? '' : 's'})`,
   LEADS_WARNING: (n) => `:warning: Leads Running Low (${n} campaign${n === 1 ? '' : 's'})`,
   WINNER: (n) => `:trophy: Winning Variants Detected (${n})`,
+  STEP_NEEDS_COPY: (n) => `Copy Replacement Needed (${n} step${n > 1 ? 's' : ''})`,
 };
 
 export interface NotificationMeta {
@@ -398,6 +400,21 @@ export function formatAllVariantsWinning(stepIndex: number): string {
 export function formatCampaignWinnerRollup(campaignName: string, steps: number[]): string {
   const stepList = steps.map(s => s + 1).join(' and ');
   return `Campaign ${campaignName} has winning variants in Steps ${stepList}. Strong candidate for increased volume.`;
+}
+
+export function formatStepNeedsCopyDetails(
+  campaignName: string,
+  stepIndex: number,
+  variantCount: number,
+  reenabledCount: number,
+  avgReplyRate: number,
+  totalSent: number,
+  totalOpps: number,
+): string {
+  const reenabledNote = reenabledCount > 0
+    ? `Re-enabled ${reenabledCount} previously killed variant${reenabledCount > 1 ? 's' : ''}. `
+    : '';
+  return `All ${variantCount} variants in Step ${stepIndex + 1} have failed with similar performance (~${avgReplyRate.toFixed(1)}% reply rate, ${totalOpps} opps across ${totalSent.toLocaleString()} sends). ${reenabledNote}Step is frozen - no kills until new copy is added.`;
 }
 
 // ---------------------------------------------------------------------------
