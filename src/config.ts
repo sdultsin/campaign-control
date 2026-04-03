@@ -130,18 +130,20 @@ export const WORKSPACE_CM_EXCLUSIONS: Record<string, Set<string>> = {
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
-export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAM', 'SAMUEL', 'TOMI']);
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'ANDRES', 'BRENDAN', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAM', 'SAMUEL', 'SHAAN', 'TOMI']);
 
 // ---------------------------------------------------------------------------
 // Per-CM dry run: CMs in this set are evaluated and logged (dashboard populates)
 // but variants are NOT killed and Slack notifications are NOT sent.
 // Remove a CM from this set to go live with kills for them.
 // ---------------------------------------------------------------------------
-export const DRY_RUN_CMS: Set<string> = new Set([]);
+export const DRY_RUN_CMS: Set<string> = new Set(['ANDRES', 'BRENDAN', 'SHAAN']);
 
 // CM -> Slack channel for monitor notifications
 export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'ALEX': 'C0AN70F328G',     // #cc-alex
+  'ANDRES': 'C0ARKJEAFRN',   // #cc-andres
+  'BRENDAN': 'C0AQJUGGBK5',  // #cc-brendan
   'CARLOS': 'C0AMRK81MRP',   // #cc-carlos
   'EYVER': 'C0AN6L2KLLW',    // #cc-eyver
   'IDO': 'C0AMRK842PK',      // #cc-ido
@@ -150,6 +152,7 @@ export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'MARCOS': 'C0ANH1S3K2S',   // #cc-marcos
   'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
   'SAM': 'C0AR0EA21C1',       // #cc-sam
+  'SHAAN': 'C0AQMTQTM6H',   // #cc-shaan
   'TOMI': 'C0ANFLJPS69',     // #cc-tomi
 };
 
