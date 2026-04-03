@@ -75,7 +75,14 @@ A variant is killed when: sent >= threshold AND opportunities == 0 (or sent/opps
 
 ## Deploy Protocol
 
-Always deploy via the deploy script, never raw `npx wrangler deploy`:
+CRITICAL: Always deploy via deploy.sh. NEVER run `npx wrangler deploy` directly.
+deploy.sh enforces 4 safety gates:
+1. Must be on main branch
+2. No uncommitted changes
+3. Up-to-date with origin/main
+4. HEAD must be descendant of last deployed version (no regressions)
+
+If a gate blocks you: commit your work, push, pull latest, then retry.
 
     ./deploy.sh
 

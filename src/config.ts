@@ -12,6 +12,7 @@ export const CM_CHANNEL_MAP: Record<string, string> = {
   'LAUTARO': 'C0A6GN95VS6',
   'BRENDAN': 'C0A619CL087',
   'TOMI': 'C0A618H43RV',
+  'SAM': 'C0AR0EA21C1',
   'SHAAN': 'C0A6AAMFDNX',
 };
 
@@ -95,9 +96,11 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   { id: 'renaissance-4', name: 'Renaissance 4', product: 'FUNDING', defaultCm: null },
   { id: 'renaissance-5', name: 'Renaissance 5', product: 'FUNDING', defaultCm: null },
   { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null },
-  // Excluded: Renaissance 3, Renaissance 6, Renaissance 7
+  { id: 'renaissance-3', name: 'Renaissance 3', product: 'FUNDING', defaultCm: 'SAM' },
+  { id: 'renaissance-6', name: 'Renaissance 6', product: 'FUNDING', defaultCm: 'SAM' },
+  // Excluded: Renaissance 7
   // Warming up as of 2026-03-16 (confirmed by Samuel). No CMs assigned, 0 active campaigns.
-  // Re-add when they go live.
+  // Re-add when it goes live.
   // ERC
   { id: 'erc-1', name: 'ERC 1', product: 'ERC', defaultCm: null },
   { id: 'erc-2', name: 'ERC 2', product: 'ERC', defaultCm: null },
@@ -127,7 +130,7 @@ export const WORKSPACE_CM_EXCLUSIONS: Record<string, Set<string>> = {
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
-export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAMUEL', 'TOMI']);
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAM', 'SAMUEL', 'TOMI']);
 
 // ---------------------------------------------------------------------------
 // Per-CM dry run: CMs in this set are evaluated and logged (dashboard populates)
@@ -146,6 +149,7 @@ export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'LEO': 'C0ANK3F1ED8',      // #cc-leo
   'MARCOS': 'C0ANH1S3K2S',   // #cc-marcos
   'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
+  'SAM': 'C0AR0EA21C1',       // #cc-sam
   'TOMI': 'C0ANFLJPS69',     // #cc-tomi
 };
 
