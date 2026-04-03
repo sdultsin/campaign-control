@@ -23,12 +23,11 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   exit 1
 fi
 
-# 3. Up-to-date with remote (ensures you have everyone's latest work)
+# 3. Local includes all remote work (prevents deploying without latest fixes)
 git fetch origin main --quiet
-LOCAL=$(git rev-parse HEAD)
 REMOTE=$(git rev-parse origin/main)
-if [ "$LOCAL" != "$REMOTE" ]; then
-  echo "[deploy] BLOCKED: local main is behind origin/main. Run: git pull"
+if ! git merge-base --is-ancestor "$REMOTE" HEAD 2>/dev/null; then
+  echo "[deploy] BLOCKED: origin/main has commits not in local. Run: git pull"
   exit 1
 fi
 
@@ -51,3 +50,7 @@ echo "[deploy] Passed all gates. Deploying version: ${HASH}"
 npx wrangler deploy
 
 echo "[deploy] SUCCESS: ${HASH} is now live."
+
+# --- POST-DEPLOY ---
+git push origin main --quiet
+echo "[deploy] Pushed to origin/main."
