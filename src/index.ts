@@ -2310,9 +2310,10 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
             if (useDirectApi) {
               // Direct mode: derive from batch analytics (no MCP dependency).
-              // active ≈ leads_count - completed - bounced - unsubscribed (skipped unavailable, typically <0.1%).
-              // If analytics status fields are lifetime accumulators, active is understated → more false
-              // warnings (safe direction). Clamped to 0 to prevent negative values from lead cycling.
+              // contacted = data.contacted (from API's contacted_count) — lifetime count of all leads
+              // that have been emailed at least once. uncontacted = totalLeads - contacted.
+              // If CMs delete/re-upload leads, contacted can exceed current leads_count;
+              // Math.max(0, ...) clamps to 0, correctly triggering EXHAUSTED. Safe direction.
               const wsMap = leadsBatchByWorkspace.get(candidate.workspaceId);
               const data = wsMap?.get(candidate.campaignId);
               if (!data) {
@@ -2324,11 +2325,16 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               bounced = data.bounced_count;
               unsubscribed = data.unsubscribed_count;
               skipped = 0; // Not available from analytics endpoint
-              active = Math.max(0, totalLeads - completed - bounced - unsubscribed);
-              contacted = completed + bounced + unsubscribed;
-              uncontacted = active;
+              contacted = data.contacted; // Use batch analytics contacted field directly
+              uncontacted = Math.max(0, totalLeads - contacted);
+              active = Math.max(0, totalLeads - completed - bounced - unsubscribed); // Keep for logging only
             } else {
+              // TODO: MCP path needs contacted field from API to work correctly
               // MCP fallback: per-campaign count_leads call (used when INSTANTLY_MODE=mcp)
+              // WARNING: MCP path lead counts are unreliable for uncontacted calculation.
+              // count_leads returns status breakdown but no contacted field. The active
+              // field includes in-sequence leads that HAVE been contacted, inflating uncontacted.
+              console.warn(`[auto-turnoff] MCP path lead counts unreliable for ${candidate.campaignId} — uncontacted may be overstated`);
               const leadCounts = await mcpApi.countLeads(
                 candidate.workspaceId,
                 candidate.campaignId,
