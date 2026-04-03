@@ -1,6 +1,13 @@
 #!/bin/bash
 set -e
 
+# 0. Tests must pass
+echo "[deploy] Running tests..."
+if ! npm test; then
+  echo "[deploy] BLOCKED: tests failed. Fix before deploying."
+  exit 1
+fi
+
 # --- DEPLOY GATE ---
 
 # 1. Must be on main

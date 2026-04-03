@@ -2,6 +2,7 @@ import { McpClient } from './mcp-client';
 import { InstantlyApi } from './instantly';
 import { InstantlyDirectApi } from './instantly-direct';
 import { evaluateStep, evaluateVariant, checkVariantWarnings, evaluateWinner } from './evaluator';
+import { isOffCampaign, isOldCampaign, isWarmLeadsCampaign, hasDataIntegrityIssue } from './campaign-filter';
 import { resolveChannel, resolveCmName, isPilotCampaign, isPilotWorkspace, isExcludedFromWorkspace } from './router';
 import {
   NotificationCollector,
@@ -128,9 +129,7 @@ async function processWithConcurrency<T, R>(
 // OFF campaign filter
 // ---------------------------------------------------------------------------
 
-function isOffCampaign(name: string): boolean {
-  return /^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\s]*OFF[\s\-]/iu.test(name);
-}
+// isOffCampaign moved to campaign-filter.ts
 
 // ---------------------------------------------------------------------------
 // Clear V1 stale KV keys (one-time cleanup before V2 deploy)
@@ -717,7 +716,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             if (isOffCampaign(campaign.name)) return result;
 
             // Skip OLD (retired/archived) campaigns — CMs prefix with "OLD" to mark inactive
-            if (/^[\p{Emoji_Presentation}\p{Extended_Pictographic}\uFE0F\s]*OLD([\s\-]|$)/iu.test(campaign.name)) return result;
+            if (isOldCampaign(campaign.name)) return result;
 
             // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD lifetime contacted
             // are curated warm lists (no-shows, opps, form-sent), not cold outreach.
@@ -727,7 +726,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             const wsBatch = leadsBatchByWorkspace.get(workspace.id);
             if (wsBatch) {
               const campAnalytics = wsBatch.get(campaign.id);
-              if (campAnalytics && campAnalytics.contacted < WARM_LEADS_THRESHOLD) {
+              if (campAnalytics && isWarmLeadsCampaign(campAnalytics.contacted)) {
                 console.log(
                   `[auto-turnoff] Warm leads skip: "${campaign.name}" (${campAnalytics.contacted} contacted < ${WARM_LEADS_THRESHOLD} threshold)`,
                 );
@@ -844,7 +843,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               const campaignAnalytics = await instantly.getCampaignAnalytics(workspace.id, campaign.id);
               const contactedCount = campaignAnalytics.contacted;
 
-              if (contactedCount > 0 && step1TotalSent > contactedCount * 1.1) {
+              if (hasDataIntegrityIssue(step1TotalSent, contactedCount)) {
                 console.warn(
                   `[auto-turnoff] DATA INTEGRITY SKIP: "${campaign.name}" Step 1 sent (${step1TotalSent}) exceeds contacted (${contactedCount}) by ${Math.round((step1TotalSent / contactedCount - 1) * 100)}%. Skipping kill evaluation — data unreliable.`,
                 );
