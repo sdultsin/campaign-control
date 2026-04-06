@@ -207,4 +207,4 @@ export const SLACK_SUPPRESSED = true;
 
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
-export const CRON_HOURS_UTC = [10, 16, 19, 23]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.
+export const CRON_HOURS_UTC = [10, 13, 14, 16, 18, 19, 21, 23]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.
