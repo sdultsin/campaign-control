@@ -54,26 +54,22 @@ export function resolveCmName(
   workspaceConfig: WorkspaceConfig,
   campaignName: string,
 ): string | null {
-  // Always check parentheses first — a campaign in a dedicated workspace
-  // can belong to a different CM (e.g. Ido's campaign in Leo's workspace)
+  // Dedicated workspace: owner is the defaultCm, period.
+  // No campaign name parsing -- avoids false matches on lead list
+  // labels, batch names, or other parenthetical metadata.
+  if (workspaceConfig.defaultCm) return workspaceConfig.defaultCm;
+
+  // Shared workspace: resolve CM from campaign name.
+  // Check parentheses first -- must match a known CM.
+  const knownCms = Object.keys(CM_CHANNEL_MAP);
   const parenMatches = [...campaignName.matchAll(/\(([^)]+)\)/g)].map((m) => m[1]);
   const filtered = parenMatches.filter((v) => v.trim().toLowerCase() !== 'copy');
-  if (filtered.length > 0) {
-    return filtered[filtered.length - 1].trim().toUpperCase();
+  for (const match of filtered.reverse()) {
+    const candidate = match.trim().toUpperCase();
+    if (knownCms.includes(candidate)) return candidate;
   }
 
-  // In dedicated workspaces, skip campaigns that clearly don't belong to the default CM.
-  // "No Show" campaigns are follow-up campaigns managed by the IM, not the CM.
-  if (workspaceConfig.defaultCm) {
-    const nameUpper = campaignName.toUpperCase();
-    if (nameUpper.includes('NO SHOW') || nameUpper.includes('NOSHOW')) {
-      return null;
-    }
-    return workspaceConfig.defaultCm;
-  }
-
-  // Fallback: check if campaign name contains a known CM name (e.g. "- Alex" without parentheses)
-  const knownCms = Object.keys(CM_CHANNEL_MAP);
+  // Fallback: suffix parsing (e.g. "Campaign Name - ALEX")
   const nameUpper = campaignName.toUpperCase();
   for (const cm of knownCms) {
     if (nameUpper.includes(`- ${cm}`) || nameUpper.endsWith(` ${cm}`)) {
@@ -81,8 +77,6 @@ export function resolveCmName(
     }
   }
 
-  if (!workspaceConfig.defaultCm) {
-    console.warn(`[CC] Unresolved CM for campaign: ${campaignName} in shared workspace`);
-  }
+  console.warn(`[CC] Unresolved CM for campaign: ${campaignName} in shared workspace`);
   return null;
 }

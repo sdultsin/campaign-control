@@ -3,24 +3,28 @@ import { resolveCmName, isPilotCampaign, isExcludedFromWorkspace } from '../src/
 import type { WorkspaceConfig } from '../src/config';
 
 describe('resolveCmName', () => {
-  it('resolves CM from parentheses in campaign name', () => {
-    const config: WorkspaceConfig = { id: 'renaissance-4', name: 'Renaissance 4', product: 'FUNDING', defaultCm: null };
-    expect(resolveCmName(config, 'Q2 Growth (LEO)')).toBe('LEO');
-  });
-
-  it('uses defaultCm for dedicated workspace', () => {
+  it('dedicated workspace returns defaultCm regardless of campaign name', () => {
     const config: WorkspaceConfig = { id: 'equinox', name: 'Equinox', product: 'FUNDING', defaultCm: 'LEO' };
     expect(resolveCmName(config, 'Regular Campaign')).toBe('LEO');
+    expect(resolveCmName(config, "General (Ben's leads) RG2848")).toBe('LEO');
+    expect(resolveCmName(config, 'HVAC (test) RG2900')).toBe('LEO');
+    expect(resolveCmName(config, 'Construction (new batch) RG3001')).toBe('LEO');
+    expect(resolveCmName(config, 'No Show Follow Up')).toBe('LEO');
   });
 
-  it('returns null for shared workspace with no CM tag', () => {
-    const config: WorkspaceConfig = { id: 'renaissance-4', name: 'Renaissance 4', product: 'FUNDING', defaultCm: null };
-    expect(resolveCmName(config, 'Unknown Campaign')).toBeNull();
+  it('shared workspace resolves valid CM from parentheses', () => {
+    const config: WorkspaceConfig = { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null };
+    expect(resolveCmName(config, 'General (IDO) RG3100')).toBe('IDO');
   });
 
-  it('skips NO SHOW campaigns in dedicated workspace', () => {
-    const config: WorkspaceConfig = { id: 'equinox', name: 'Equinox', product: 'FUNDING', defaultCm: 'LEO' };
-    expect(resolveCmName(config, 'No Show Follow Up')).toBeNull();
+  it('shared workspace with non-CM parens falls through to suffix', () => {
+    const config: WorkspaceConfig = { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null };
+    expect(resolveCmName(config, 'General (random text) - ALEX')).toBe('ALEX');
+  });
+
+  it('shared workspace with no CM match returns null', () => {
+    const config: WorkspaceConfig = { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null };
+    expect(resolveCmName(config, 'General (random text) RG3200')).toBeNull();
   });
 
   it('filters out (copy) from parentheses matches', () => {
