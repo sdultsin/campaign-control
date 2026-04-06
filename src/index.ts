@@ -2281,8 +2281,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           console.log(`[auto-turnoff] Leads check: evaluating ${leadsCheckCandidates.length} campaigns`);
         }
 
-        // Batch analytics already fetched in Phase 1 (warm leads filter) and stored
-        // in leadsBatchByWorkspace. Fetch any missing workspaces (e.g. if Phase 1 fetch failed).
+        // Batch analytics fetched in Phase 1. Still used for `contacted` (lifetime counter) in logging.
+        // NOTE: leads_count from batch analytics is always 0 — do NOT use for depletion evaluation.
+        // Actual lead counts come from per-campaign /leads/count calls below.
         if (useDirectApi && leadsCheckCandidates.length > 0) {
           const directApi = instantly as InstantlyDirectApi;
           const workspaceIds = [...new Set(leadsCheckCandidates.map((c) => c.workspaceId))];
@@ -2308,47 +2309,39 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             let contacted: number;
             let uncontacted: number;
 
-            if (useDirectApi) {
-              // Direct mode: derive from batch analytics (no MCP dependency).
-              // contacted = data.contacted (from API's contacted_count) — lifetime count of all leads
-              // that have been emailed at least once. uncontacted = totalLeads - contacted.
-              // If CMs delete/re-upload leads, contacted can exceed current leads_count;
-              // Math.max(0, ...) clamps to 0, correctly triggering EXHAUSTED. Safe direction.
-              const wsMap = leadsBatchByWorkspace.get(candidate.workspaceId);
-              const data = wsMap?.get(candidate.campaignId);
-              if (!data) {
-                console.warn(`[auto-turnoff] No batch analytics for campaign ${candidate.campaignId} — skipping leads check`);
-                continue;
-              }
-              totalLeads = data.leads_count;
-              completed = data.completed_count;
-              bounced = data.bounced_count;
-              unsubscribed = data.unsubscribed_count;
-              skipped = 0; // Not available from analytics endpoint
-              contacted = data.contacted; // Use batch analytics contacted field directly
-              uncontacted = Math.max(0, totalLeads - contacted);
-              active = Math.max(0, totalLeads - completed - bounced - unsubscribed); // Keep for logging only
-            } else {
-              // TODO: MCP path needs contacted field from API to work correctly
-              // MCP fallback: per-campaign count_leads call (used when INSTANTLY_MODE=mcp)
-              // WARNING: MCP path lead counts are unreliable for uncontacted calculation.
-              // count_leads returns status breakdown but no contacted field. The active
-              // field includes in-sequence leads that HAVE been contacted, inflating uncontacted.
-              console.warn(`[auto-turnoff] MCP path lead counts unreliable for ${candidate.campaignId} — uncontacted may be overstated`);
-              const leadCounts = await mcpApi.countLeads(
-                candidate.workspaceId,
-                candidate.campaignId,
-              );
-              totalLeads = leadCounts.total_leads;
-              const s = leadCounts.status;
-              completed = s.completed;
-              bounced = s.bounced;
-              unsubscribed = s.unsubscribed;
-              skipped = s.skipped;
-              active = s.active;
-              contacted = completed + bounced + skipped + unsubscribed;
-              uncontacted = active;
+            // Use per-campaign /leads/count for accurate totals (batch analytics leads_count is always 0)
+            const directApi = useDirectApi ? (instantly as InstantlyDirectApi) : null;
+            let leadCounts: { total_leads: number; status: { completed: number; active: number; skipped: number; bounced: number; unsubscribed: number } };
+            try {
+              leadCounts = directApi
+                ? await directApi.countLeads(candidate.workspaceId, candidate.campaignId)
+                : await mcpApi.countLeads(candidate.workspaceId, candidate.campaignId);
+            } catch (countErr) {
+              console.error(`[auto-turnoff] countLeads failed for ${candidate.campaignId}: ${countErr}`);
+              leadsCheckErrors++;
+              continue;
             }
+
+            // Log raw response for first campaign checked (remove after verified)
+            if (totalLeadsChecked === 0) {
+              console.log(`[auto-turnoff] count_leads raw response sample: ${JSON.stringify(leadCounts)}`);
+            }
+
+            totalLeads = leadCounts.total_leads;
+            const s = leadCounts.status;
+            completed = s.completed;
+            bounced = s.bounced;
+            unsubscribed = s.unsubscribed;
+            skipped = s.skipped;
+            active = s.active;
+
+            // Uncontacted = leads not yet in ANY status (never entered sequence)
+            const statusSum = active + completed + bounced + skipped + unsubscribed;
+            uncontacted = Math.max(0, totalLeads - statusSum);
+
+            // contacted from batch analytics (lifetime counter) - keep for logging only
+            const batchData = leadsBatchByWorkspace.get(candidate.workspaceId)?.get(candidate.campaignId);
+            contacted = batchData?.contacted ?? 0;
 
             // Evaluate
             const result = evaluateLeadDepletion(uncontacted, totalLeads);

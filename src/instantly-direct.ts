@@ -147,28 +147,19 @@ export class InstantlyDirectApi {
     status: { completed: number; active: number; skipped: number; bounced: number; unsubscribed: number };
   }> {
     const key = this.getKey(workspaceId);
-    // Instantly v2 has no /leads/count endpoint. Use /leads with limit=0
-    // to get pagination metadata, or fall back to campaign analytics.
-    try {
-      const raw = await this.get<Record<string, unknown>>('/leads', key, {
-        campaign_id: campaignId,
-        limit: '0',
-      });
-      // Check if response has total_count or similar pagination field
-      const totalLeads = (raw.total_count as number) ?? (raw.total as number) ?? 0;
-      if (totalLeads > 0) {
-        return {
-          total_leads: totalLeads,
-          status: { completed: 0, active: 0, skipped: 0, bounced: 0, unsubscribed: 0 },
-        };
-      }
-    } catch {
-      // Endpoint may not support limit=0, fall through
-    }
-
-    // Fallback: return zero — leads monitor will skip this campaign
-    console.warn(`[instantly-direct] countLeads fallback for ${campaignId} — no direct endpoint`);
-    return { total_leads: 0, status: { completed: 0, active: 0, skipped: 0, bounced: 0, unsubscribed: 0 } };
+    const raw = await this.get<Record<string, unknown>>('/leads/count', key, {
+      campaign_id: campaignId,
+    });
+    return {
+      total_leads: (raw.total_leads as number) ?? (raw.total as number) ?? (raw.count as number) ?? 0,
+      status: {
+        completed: (raw.completed as number) ?? 0,
+        active: (raw.active as number) ?? 0,
+        skipped: (raw.skipped as number) ?? 0,
+        bounced: (raw.bounced as number) ?? 0,
+        unsubscribed: (raw.unsubscribed as number) ?? 0,
+      },
+    };
   }
 
   async getCampaignAnalytics(workspaceId: string, campaignId: string): Promise<{
