@@ -47,7 +47,7 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
 
   // 1. Query all DISABLED (real) entries for the target date
   const { data: disabledRaw, error: disabledErr } = await sb
-    .from('audit_logs')
+    .from('cc_audit_logs')
     .select('campaign_id, campaign, workspace_id, workspace, step, variant, variant_label, cm, product')
     .eq('action', 'DISABLED')
     .eq('dry_run', false)
@@ -60,7 +60,7 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
 
   // 2. Query already-reverted entries (RE_ENABLED, CM_OVERRIDE, or previous MANUAL_REVERT)
   const { data: revertedRaw, error: revertedErr } = await sb
-    .from('audit_logs')
+    .from('cc_audit_logs')
     .select('campaign_id, step, variant')
     .in('action', ['RE_ENABLED', 'CM_OVERRIDE', 'MANUAL_REVERT'])
     .eq('dry_run', false)
@@ -213,7 +213,7 @@ export async function handleRevert(env: Env, params: URLSearchParams): Promise<R
             const t = campaignTargets.find(
               (ct) => ct.step === vr.step && ct.variantLabel === vr.variantLabel,
             )!;
-            await sb.from('audit_logs').insert({
+            await sb.from('cc_audit_logs').insert({
               timestamp: new Date().toISOString(),
               action: 'MANUAL_REVERT',
               workspace: t.workspace,

@@ -19,7 +19,7 @@ export async function writeAuditLogToSupabase(
   sb: SupabaseClient,
   entry: AuditEntry,
 ): Promise<void> {
-  const { error } = await sb.from('audit_logs').insert({
+  const { error } = await sb.from('cc_audit_logs').insert({
     timestamp: entry.timestamp,
     action: entry.action,
     workspace: entry.workspace,
@@ -41,14 +41,14 @@ export async function writeAuditLogToSupabase(
     dry_run: entry.dryRun,
     worker_version: WORKER_VERSION,
   });
-  if (error) console.error(`[supabase] audit_logs insert failed: ${error.message}`);
+  if (error) console.error(`[supabase] cc_audit_logs insert failed: ${error.message}`);
 }
 
 export async function writeLeadsAuditToSupabase(
   sb: SupabaseClient,
   entry: LeadsAuditEntry,
 ): Promise<void> {
-  const { error } = await sb.from('leads_audit_logs').insert({
+  const { error } = await sb.from('cc_leads_audit_logs').insert({
     timestamp: entry.timestamp,
     action: entry.action,
     workspace: entry.workspace,
@@ -68,7 +68,7 @@ export async function writeLeadsAuditToSupabase(
     dry_run: entry.dryRun,
     worker_version: WORKER_VERSION,
   });
-  if (error) console.error(`[supabase] leads_audit_logs insert failed: ${error.message}`);
+  if (error) console.error(`[supabase] cc_leads_audit_logs insert failed: ${error.message}`);
 }
 
 /**
@@ -79,7 +79,7 @@ export async function writeRunSummaryToSupabase(
   sb: SupabaseClient,
   summary: RunSummary,
 ): Promise<string | null> {
-  const { data, error } = await sb.from('run_summaries').insert({
+  const { data, error } = await sb.from('cc_run_summaries').insert({
     timestamp: summary.timestamp,
     workspaces_processed: summary.workspacesProcessed,
     campaigns_evaluated: summary.campaignsEvaluated,
@@ -108,7 +108,7 @@ export async function writeRunSummaryToSupabase(
     worker_version: WORKER_VERSION,
   }).select('id').single();
   if (error) {
-    console.error(`[supabase] run_summaries insert failed: ${error.message}`);
+    console.error(`[supabase] cc_run_summaries insert failed: ${error.message}`);
     return null;
   }
   return (data as { id: string } | null)?.id ?? null;
@@ -124,7 +124,7 @@ export async function updateRunSummaryInSupabase(
   rowId: string,
   summary: RunSummary,
 ): Promise<void> {
-  const { error } = await sb.from('run_summaries').update({
+  const { error } = await sb.from('cc_run_summaries').update({
     timestamp: summary.timestamp,
     workspaces_processed: summary.workspacesProcessed,
     campaigns_evaluated: summary.campaignsEvaluated,
@@ -152,7 +152,7 @@ export async function updateRunSummaryInSupabase(
     dry_run: summary.dryRun,
     worker_version: WORKER_VERSION,
   }).eq('id', rowId);
-  if (error) console.error(`[supabase] run_summaries update failed: ${error.message}`);
+  if (error) console.error(`[supabase] cc_run_summaries update failed: ${error.message}`);
 }
 
 export async function writeDailySnapshotToSupabase(
@@ -180,10 +180,10 @@ export async function writeDailySnapshotToSupabase(
     worker_version: WORKER_VERSION,
   };
 
-  const { error } = await sb.from('daily_snapshots').upsert(row, {
+  const { error } = await sb.from('cc_daily_snapshots').upsert(row, {
     onConflict: 'date',
   });
-  if (error) console.error(`[supabase] daily_snapshots upsert failed: ${error.message}`);
+  if (error) console.error(`[supabase] cc_daily_snapshots upsert failed: ${error.message}`);
 }
 
 export interface NotificationRecord {
@@ -209,11 +209,11 @@ export async function writeNotificationToSupabase(
   sb: SupabaseClient,
   record: NotificationRecord,
 ): Promise<void> {
-  const { error } = await sb.from('notifications').insert({
+  const { error } = await sb.from('cc_notifications').insert({
     ...record,
     worker_version: WORKER_VERSION,
   });
-  if (error) console.error(`[supabase] notifications insert failed: ${error.message}`);
+  if (error) console.error(`[supabase] cc_notifications insert failed: ${error.message}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -239,7 +239,7 @@ export async function upsertDashboardItem(
   // Check if an active item already exists for this issue
   // Must filter by step+variant to match the unique index: (cm, campaign_id, item_type, COALESCE(step, -1), COALESCE(variant, -1))
   let query = sb
-    .from('dashboard_items')
+    .from('cc_dashboard_items')
     .select('id, created_at, dismissed_at')
     .eq('cm', item.cm)
     .eq('campaign_id', item.campaign_id)
@@ -269,7 +269,7 @@ export async function upsertDashboardItem(
 
     // Update existing: refresh last_scan_at and context
     const { error } = await sb
-      .from('dashboard_items')
+      .from('cc_dashboard_items')
       .update({
         last_scan_at: new Date().toISOString(),
         context: item.context,
@@ -280,18 +280,18 @@ export async function upsertDashboardItem(
         worker_version: WORKER_VERSION,
       })
       .eq('id', match.id);
-    if (error) console.error(`[supabase] dashboard_items update failed: ${error.message}`);
+    if (error) console.error(`[supabase] cc_dashboard_items update failed: ${error.message}`);
   } else {
     // Insert new item
     const { error } = await sb
-      .from('dashboard_items')
+      .from('cc_dashboard_items')
       .insert({
         ...item,
         created_at: new Date().toISOString(),
         last_scan_at: new Date().toISOString(),
         worker_version: WORKER_VERSION,
       });
-    if (error) console.error(`[supabase] dashboard_items insert failed: ${error.message}`);
+    if (error) console.error(`[supabase] cc_dashboard_items insert failed: ${error.message}`);
   }
 }
 
@@ -309,13 +309,13 @@ export async function resolveStaleItems(
 ): Promise<number> {
   // Get all active items for this CM
   const { data: activeItems, error: fetchErr } = await sb
-    .from('dashboard_items')
+    .from('cc_dashboard_items')
     .select('id, item_type, campaign_id, campaign_name, workspace_id, step, variant, created_at')
     .eq('cm', cm)
     .is('resolved_at', null);
 
   if (fetchErr || !activeItems) {
-    console.error(`[supabase] dashboard_items fetch failed: ${fetchErr?.message}`);
+    console.error(`[supabase] cc_dashboard_items fetch failed: ${fetchErr?.message}`);
     return 0;
   }
 
@@ -334,17 +334,17 @@ export async function resolveStaleItems(
       // This item was not found in the current scan - resolve it
       const now = new Date().toISOString();
       const { error: updateErr } = await sb
-        .from('dashboard_items')
+        .from('cc_dashboard_items')
         .update({ resolved_at: now, worker_version: WORKER_VERSION })
         .eq('id', item.id);
       if (updateErr) {
-        console.error(`[supabase] dashboard_items resolve failed: ${updateErr.message}`);
+        console.error(`[supabase] cc_dashboard_items resolve failed: ${updateErr.message}`);
         continue;
       }
 
       // Write resolution log entry
       const { error: logErr } = await sb
-        .from('resolution_log')
+        .from('cc_resolution_log')
         .insert({
           item_type: item.item_type,
           cm,
@@ -359,7 +359,7 @@ export async function resolveStaleItems(
           worker_version: WORKER_VERSION,
           resolution_method: 'auto',
         });
-      if (logErr) console.error(`[supabase] resolution_log insert failed: ${logErr.message}`);
+      if (logErr) console.error(`[supabase] cc_resolution_log insert failed: ${logErr.message}`);
 
       resolved++;
     }
@@ -381,13 +381,13 @@ export async function getDashboardDigestData(
 
   // Active dashboard items
   const { count: activeCount } = await sb
-    .from('dashboard_items')
+    .from('cc_dashboard_items')
     .select('*', { count: 'exact', head: true })
     .eq('cm', cm)
     .is('resolved_at', null);
 
   const { count: criticalCount } = await sb
-    .from('dashboard_items')
+    .from('cc_dashboard_items')
     .select('*', { count: 'exact', head: true })
     .eq('cm', cm)
     .eq('severity', 'CRITICAL')
@@ -395,7 +395,7 @@ export async function getDashboardDigestData(
 
   // Kills since yesterday
   const { count: killsSince } = await sb
-    .from('audit_logs')
+    .from('cc_audit_logs')
     .select('*', { count: 'exact', head: true })
     .eq('cm', cm)
     .eq('action', 'DISABLED')
@@ -404,7 +404,7 @@ export async function getDashboardDigestData(
 
   // Re-enables since yesterday
   const { count: reEnablesSince } = await sb
-    .from('audit_logs')
+    .from('cc_audit_logs')
     .select('*', { count: 'exact', head: true })
     .eq('cm', cm)
     .eq('action', 'RE_ENABLED')
@@ -413,7 +413,7 @@ export async function getDashboardDigestData(
 
   // Winners detected in last 24h (for digest top performers line)
   const { data: winnerRows } = await sb
-    .from('audit_logs')
+    .from('cc_audit_logs')
     .select('campaign, variant_label, trigger_ratio')
     .eq('cm', cm)
     .eq('action', 'WINNER_DETECTED')

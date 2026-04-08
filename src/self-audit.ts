@@ -92,7 +92,7 @@ const thirtyMinAgo = () => new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
 async function checkRunCompletion(sb: SupabaseClient, runSummary: RunSummary): Promise<AuditCheckResult> {
   try {
-    const { data } = await sb.from('run_summaries')
+    const { data } = await sb.from('cc_run_summaries')
       .select('worker_version, campaigns_evaluated')
       .gt('created_at', thirtyMinAgo())
       .order('created_at', { ascending: false })
@@ -127,7 +127,7 @@ async function checkRunCompletion(sb: SupabaseClient, runSummary: RunSummary): P
 
 async function checkKillIntegrity(sb: SupabaseClient): Promise<AuditCheckResult> {
   try {
-    const { data: kills, error: killsError } = await sb.from('audit_logs')
+    const { data: kills, error: killsError } = await sb.from('cc_audit_logs')
       .select('campaign, step, variant, campaign_id')
       .eq('action', 'DISABLED')
       .eq('worker_version', WORKER_VERSION)
@@ -147,7 +147,7 @@ async function checkKillIntegrity(sb: SupabaseClient): Promise<AuditCheckResult>
     const missing: string[] = [];
     let queryErrors = 0;
     for (const kill of kills) {
-      const { data: dashItems, error: dashError } = await sb.from('dashboard_items')
+      const { data: dashItems, error: dashError } = await sb.from('cc_dashboard_items')
         .select('id')
         .eq('campaign_id', kill.campaign_id)
         .eq('step', kill.step)
@@ -197,7 +197,7 @@ async function checkKillIntegrity(sb: SupabaseClient): Promise<AuditCheckResult>
 
 async function checkDashboardDedup(sb: SupabaseClient): Promise<AuditCheckResult> {
   try {
-    const { data } = await sb.from('dashboard_items')
+    const { data } = await sb.from('cc_dashboard_items')
       .select('cm, campaign_id, item_type, step, variant')
       .is('resolved_at', null);
 
@@ -306,7 +306,7 @@ async function checkGhostAudit(kv: KVNamespace, runSummary: RunSummary): Promise
 
 async function checkThresholdMath(sb: SupabaseClient): Promise<AuditCheckResult> {
   try {
-    const { data } = await sb.from('audit_logs')
+    const { data } = await sb.from('cc_audit_logs')
       .select('campaign, trigger_sent, trigger_opportunities, trigger_ratio, trigger_threshold')
       .in('action', ['DISABLED', 'BLOCKED'])
       .eq('worker_version', WORKER_VERSION)
@@ -414,7 +414,7 @@ async function checkSupabaseSync(sb: SupabaseClient, runSummary: RunSummary): Pr
 
     // If run had kills, verify DISABLED rows exist
     if (runSummary.variantsDisabled > 0) {
-      const { count } = await sb.from('audit_logs')
+      const { count } = await sb.from('cc_audit_logs')
         .select('*', { count: 'exact', head: true })
         .eq('action', 'DISABLED')
         .eq('worker_version', WORKER_VERSION)
@@ -424,7 +424,7 @@ async function checkSupabaseSync(sb: SupabaseClient, runSummary: RunSummary): Pr
 
     // If run had blocks, verify BLOCKED rows exist
     if (runSummary.variantsBlocked > 0) {
-      const { count } = await sb.from('audit_logs')
+      const { count } = await sb.from('cc_audit_logs')
         .select('*', { count: 'exact', head: true })
         .eq('action', 'BLOCKED')
         .eq('worker_version', WORKER_VERSION)
@@ -434,7 +434,7 @@ async function checkSupabaseSync(sb: SupabaseClient, runSummary: RunSummary): Pr
 
     // daily_snapshots for today
     const todayDate = new Date().toISOString().slice(0, 10);
-    const { count: snapCount } = await sb.from('daily_snapshots')
+    const { count: snapCount } = await sb.from('cc_daily_snapshots')
       .select('*', { count: 'exact', head: true })
       .eq('date', todayDate);
     if ((snapCount ?? 0) === 0) failures.push('No daily_snapshot for today');
@@ -467,7 +467,7 @@ async function checkSlackDelivery(sb: SupabaseClient): Promise<AuditCheckResult>
   }
 
   try {
-    const { data } = await sb.from('notifications')
+    const { data } = await sb.from('cc_notifications')
       .select('notification_type, reply_success')
       .eq('worker_version', WORKER_VERSION)
       .gt('timestamp', thirtyMinAgo())
@@ -521,7 +521,7 @@ function checkLeadsMonitoring(runSummary: RunSummary): AuditCheckResult {
 
 async function checkWinnerDetection(sb: SupabaseClient): Promise<AuditCheckResult> {
   try {
-    const { data } = await sb.from('audit_logs')
+    const { data } = await sb.from('cc_audit_logs')
       .select('campaign, variant_label, trigger_opportunities')
       .eq('action', 'WINNER_DETECTED')
       .eq('worker_version', WORKER_VERSION)
@@ -596,7 +596,7 @@ function checkCrossRunConsistency(runSummary: RunSummary, trailingAvg: TrailingA
 async function checkDailySnapshot(sb: SupabaseClient): Promise<AuditCheckResult> {
   try {
     const todayDate = new Date().toISOString().slice(0, 10);
-    const { data } = await sb.from('daily_snapshots')
+    const { data } = await sb.from('cc_daily_snapshots')
       .select('date, total_campaigns, total_variants')
       .eq('date', todayDate)
       .limit(1);
@@ -702,7 +702,7 @@ function buildConfigSnapshot(): AuditConfigSnapshot {
 // ---------------------------------------------------------------------------
 
 async function fetchTrailingRuns(sb: SupabaseClient, currentTimestamp: string): Promise<Record<string, unknown>[]> {
-  const { data } = await sb.from('run_summaries')
+  const { data } = await sb.from('cc_run_summaries')
     .select('campaigns_evaluated, variants_disabled, variants_blocked, errors, workspaces_processed, leads_checked, leads_check_errors, winners_detected, ghost_re_enables')
     .lt('created_at', currentTimestamp)
     .not('worker_version', 'is', null)
