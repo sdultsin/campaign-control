@@ -239,6 +239,7 @@ export class InstantlyDirectApi {
    */
   async getBatchCampaignAnalytics(workspaceId: string): Promise<Map<string, {
     leads_count: number;
+    new_leads_contacted_count: number;
     contacted: number;
     completed_count: number;
     bounced_count: number;
@@ -248,20 +249,23 @@ export class InstantlyDirectApi {
     const raw = await this.get<Record<string, unknown>>('/campaigns/analytics', key);
     const result = new Map<string, {
       leads_count: number;
+      new_leads_contacted_count: number;
       contacted: number;
       completed_count: number;
       bounced_count: number;
       unsubscribed_count: number;
     }>();
 
-    // Response shape: bare array [{campaign_id, leads_count, contacted_count, ...}]
+    // Response shape: bare array [{campaign_id, leads_count, new_leads_contacted_count, ...}]
     const campaigns = this.extractArray<Record<string, unknown>>(raw);
     for (const c of campaigns) {
       const id = (c.campaign_id ?? c.id) as string;
       if (!id) continue;
+      const newLeadsContacted = (c.new_leads_contacted_count as number) ?? (c.contacted_count as number) ?? 0;
       result.set(id, {
         leads_count: (c.leads_count as number) ?? 0,
-        contacted: (c.contacted_count as number) ?? 0,
+        new_leads_contacted_count: newLeadsContacted,
+        contacted: newLeadsContacted,
         completed_count: (c.completed_count as number) ?? 0,
         bounced_count: (c.bounced_count as number) ?? 0,
         unsubscribed_count: (c.unsubscribed_count as number) ?? 0,

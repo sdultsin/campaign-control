@@ -564,8 +564,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     // Batch analytics by workspace — fetched once in Phase 1 (warm leads filter),
     // reused in Phase 3 (leads depletion monitor). Avoids duplicate API calls.
     const leadsBatchByWorkspace = new Map<string, Map<string, {
-      leads_count: number; contacted: number; completed_count: number;
-      bounced_count: number; unsubscribed_count: number;
+      leads_count: number; new_leads_contacted_count: number; contacted: number;
+      completed_count: number; bounced_count: number; unsubscribed_count: number;
     }>>();
 
     // Dashboard state: collect BLOCKED, dry-run kills, warnings, and leads issues for Phase 5
@@ -2374,39 +2374,25 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             let contacted: number;
             let uncontacted: number;
 
-            // Use per-campaign /leads/count for accurate totals (batch analytics leads_count is always 0)
-            const directApi = useDirectApi ? (instantly as InstantlyDirectApi) : null;
-            let leadCounts: { total_leads: number; status: { completed: number; active: number; skipped: number; bounced: number; unsubscribed: number } };
-            try {
-              leadCounts = directApi
-                ? await directApi.countLeads(candidate.workspaceId, candidate.campaignId)
-                : await mcpApi.countLeads(candidate.workspaceId, candidate.campaignId);
-            } catch (countErr) {
-              console.error(`[auto-turnoff] countLeads failed for ${candidate.campaignId}: ${countErr}`);
+            // Use batch analytics for all lead counts — new_leads_contacted_count is
+            // the canonical "leads sent at least one email" field (matches Instantly UI
+            // "sequence started"). active = total - contacted (uncontacted leads remaining).
+            const wsMap = leadsBatchByWorkspace.get(candidate.workspaceId);
+            const batchData = wsMap?.get(candidate.campaignId);
+            if (!batchData) {
+              console.warn(`[auto-turnoff] No batch analytics for campaign ${candidate.campaignId} — skipping leads check`);
               leadsCheckErrors++;
               continue;
             }
 
-            // Log raw response for first campaign checked (remove after verified)
-            if (totalLeadsChecked === 0) {
-              console.log(`[auto-turnoff] count_leads raw response sample: ${JSON.stringify(leadCounts)}`);
-            }
-
-            totalLeads = leadCounts.total_leads;
-            const s = leadCounts.status;
-            completed = s.completed;
-            bounced = s.bounced;
-            unsubscribed = s.unsubscribed;
-            skipped = s.skipped;
-            active = s.active;
-
-            // Uncontacted = leads not yet in ANY status (never entered sequence)
-            const statusSum = active + completed + bounced + skipped + unsubscribed;
-            uncontacted = Math.max(0, totalLeads - statusSum);
-
-            // contacted from batch analytics (lifetime counter) - keep for logging only
-            const batchData = leadsBatchByWorkspace.get(candidate.workspaceId)?.get(candidate.campaignId);
-            contacted = batchData?.contacted ?? 0;
+            totalLeads = batchData.leads_count;
+            completed = batchData.completed_count;
+            bounced = batchData.bounced_count;        // email-level delivery failures (not lead status)
+            unsubscribed = batchData.unsubscribed_count;
+            skipped = 0;
+            contacted = batchData.new_leads_contacted_count;
+            active = Math.max(0, totalLeads - contacted);   // uncontacted leads remaining
+            uncontacted = active;
 
             // Evaluate
             const result = evaluateLeadDepletion(uncontacted, totalLeads);
