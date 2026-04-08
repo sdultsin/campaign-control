@@ -40,7 +40,7 @@ These exist to prevent bad kills. Never remove or weaken without explicit approv
 - **Last-variant protection:** Never kill if it's the only active variant in a campaign
 - **Redemption Window:** 48h recheck for killed variants. Late-arriving opps can redeem and re-enable
 - **Ghost exemption:** Campaigns that disappear from API get `exempt:` KV key, not killed
-- **Graduated threshold:** Variants with opps > 0 get 10% more runway (OPP_RUNWAY_MULTIPLIER)
+- **Single-opp runway:** Variants with exactly 1 opp get 1.5x extended threshold (SINGLE_OPP_RUNWAY_MULTIPLIER). Variants with 2+ opps use the raw base threshold — their ratio already has statistical weight.
 - **OFF campaign buffer:** 20% higher threshold for campaigns tagged OFF
 
 ## Supabase Tables
@@ -69,9 +69,9 @@ All tables use `worker_version` column. **Always filter WHERE worker_version = '
 
 ## Threshold Logic
 
-Kill threshold = max(provider_threshold, product_threshold). Provider: SMTP 4500, Google 3800, Outlook 5000. Products: Funding 4000, ERC 6000, S125 14000. Multipliers: OFF campaigns get 1.2x, variants with opps get 1.1x. Winner threshold = kill_threshold * 0.66 with minimum 5 opps.
+Kill threshold = max(provider_threshold, product_threshold). Provider: SMTP 4500, Google 3800, Outlook 5000. Products: Funding 4000, ERC 6000, S125 14000. Multipliers: OFF campaigns get 1.2x. Winner threshold = kill_threshold * 0.66 with minimum 5 opps.
 
-A variant is killed when: sent >= threshold AND opportunities == 0 (or sent/opps ratio exceeds threshold with opp runway).
+A variant is killed when: sent >= threshold AND (opportunities == 0, OR ratio > threshold*1.5 for 1-opp variants, OR ratio > threshold for 2+ opp variants).
 
 ## Deploy Protocol
 

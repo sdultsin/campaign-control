@@ -1,5 +1,5 @@
 import type { StepAnalytics, Step, Decision, SafetyResult, NotificationType, LastVariantWarning } from './types';
-import { LAST_VARIANT_WARNING_PCT, VARIANT_LABELS, OPP_RUNWAY_MULTIPLIER, WINNER_THRESHOLD_MULTIPLIER, WINNER_MIN_OPPS, WINNER_MIN_SENDS_MULTIPLIER } from './config';
+import { LAST_VARIANT_WARNING_PCT, VARIANT_LABELS, SINGLE_OPP_RUNWAY_MULTIPLIER, WINNER_THRESHOLD_MULTIPLIER, WINNER_MIN_OPPS, WINNER_MIN_SENDS_MULTIPLIER } from './config';
 
 // Evaluate a single variant against the threshold.
 // threshold doubles as both the minimum-sends gate and the sent/opportunities ratio ceiling.
@@ -7,19 +7,35 @@ export function evaluateVariant(sent: number, opportunities: number, threshold: 
   if (sent < threshold) {
     return { action: 'SKIP', reason: 'Below minimum sends gate' };
   }
+
   if (opportunities === 0) {
     return { action: 'KILL_CANDIDATE', reason: `${sent} sent, 0 opportunities` };
   }
+
   const ratio = sent / opportunities;
-  // Variants with opps get extended runway -- one more opp could save them
-  const effectiveThreshold = threshold * OPP_RUNWAY_MULTIPLIER;
-  if (ratio > effectiveThreshold) {
+
+  if (opportunities === 1) {
+    // Single-opp runway: 1.5x extended threshold before killing.
+    // Rationale: one more opp could halve the ratio.
+    const effectiveThreshold = threshold * SINGLE_OPP_RUNWAY_MULTIPLIER;
+    if (ratio > effectiveThreshold) {
+      return {
+        action: 'KILL_CANDIDATE',
+        reason: `Ratio ${ratio.toFixed(1)}:1 exceeds single-opp threshold ${effectiveThreshold.toFixed(0)}:1`,
+      };
+    }
+    return { action: 'KEEP', reason: `Ratio ${ratio.toFixed(1)}:1 within single-opp threshold ${effectiveThreshold.toFixed(0)}:1` };
+  }
+
+  // 2+ opps: raw ratio vs base threshold, no multiplier.
+  // Statistical weight is sufficient.
+  if (ratio > threshold) {
     return {
       action: 'KILL_CANDIDATE',
-      reason: `Ratio ${ratio.toFixed(1)}:1 exceeds extended threshold ${effectiveThreshold.toFixed(0)}:1`,
+      reason: `Ratio ${ratio.toFixed(1)}:1 exceeds threshold ${threshold.toFixed(0)}:1`,
     };
   }
-  return { action: 'KEEP', reason: `Ratio ${ratio.toFixed(1)}:1 within extended threshold ${effectiveThreshold.toFixed(0)}:1` };
+  return { action: 'KEEP', reason: `Ratio ${ratio.toFixed(1)}:1 within threshold ${threshold.toFixed(0)}:1` };
 }
 
 // Safety check — can we kill the target indices without emptying the step?
@@ -129,13 +145,17 @@ export function checkVariantWarnings(
     if (pctConsumed < LAST_VARIANT_WARNING_PCT * 100) continue;
 
     // Only skip variants that will actually be killed by evaluateVariant.
-    // Variants past the raw threshold but KEPT by opp-runway ratio need warnings.
+    // Mirror the 3-branch kill logic exactly so warnings only fire for kept variants.
     if (sent >= threshold) {
-      if (opportunities === 0) continue;  // Will be killed (0 opps past threshold)
+      if (opportunities === 0) continue;  // will be killed (0 opps)
       const ratio = sent / opportunities;
-      const effectiveKillThreshold = threshold * OPP_RUNWAY_MULTIPLIER;
-      if (ratio > effectiveKillThreshold) continue;  // Will be killed (ratio exceeded)
-      // Variant is past threshold but kept alive by opp ratio - generate warning
+      if (opportunities === 1) {
+        const effectiveKillThreshold = threshold * SINGLE_OPP_RUNWAY_MULTIPLIER;
+        if (ratio > effectiveKillThreshold) continue;  // will be killed (single-opp threshold exceeded)
+      } else {
+        if (ratio > threshold) continue;  // will be killed (2+ opps, base threshold exceeded)
+      }
+      // Variant is past minimum gate but kept alive - generate warning
     }
 
     warnings.push({

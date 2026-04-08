@@ -55,13 +55,10 @@ export function getStepMultiplier(stepIndex: number): number {
   return STEP_MULTIPLIERS[stepIndex] ?? STEP_MULTIPLIER_CAP;
 }
 
-/**
- * Runway extension for variants that have opportunities but exceed the base threshold.
- * Applied as a multiplier: effective_threshold = threshold * OPP_RUNWAY_MULTIPLIER.
- * Only applies when opportunities > 0. Zero-opp variants use the base threshold.
- * Stacks with OFF_CAMPAIGN_BUFFER (applied earlier in resolveThreshold).
- */
-export const OPP_RUNWAY_MULTIPLIER = 1.1;
+/** 1-opp runway: give single-opportunity variants extra room before killing.
+ *  Rationale: one more opp could halve the ratio. 2+ opp variants get no multiplier
+ *  - their ratio already has statistical weight. */
+export const SINGLE_OPP_RUNWAY_MULTIPLIER = 1.5;
 
 /** Winner threshold = kill threshold * WINNER_THRESHOLD_MULTIPLIER (0.66x). */
 export const WINNER_THRESHOLD_MULTIPLIER = 0.66;

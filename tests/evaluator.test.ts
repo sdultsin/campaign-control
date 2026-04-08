@@ -3,27 +3,58 @@ import { evaluateVariant, safetyCheck, evaluateStep, checkVariantWarnings, evalu
 import type { Step, StepAnalytics } from '../src/types';
 
 describe('evaluateVariant', () => {
+  // --- 0 opp branch ---
   it('kills variant with 0 opps at threshold', () => {
     const result = evaluateVariant(5000, 0, 5000);
     expect(result.action).toBe('KILL_CANDIDATE');
   });
 
-  it('spares variant below threshold', () => {
+  it('skips variant with 0 opps below threshold', () => {
     const result = evaluateVariant(3000, 0, 5000);
     expect(result.action).toBe('SKIP');
   });
 
-  it('gives OPP_RUNWAY_MULTIPLIER runway to variant with opps', () => {
-    // 5000 sent, 1 opp. Ratio = 5000. Extended threshold = 5000 * 1.1 = 5500.
-    // 5000 <= 5500 -> KEEP
+  // --- 1 opp branch (SINGLE_OPP_RUNWAY_MULTIPLIER = 1.5) ---
+  it('keeps variant with 1 opp when ratio is below 1.5x threshold', () => {
+    // 5000 sent, 1 opp. Ratio = 5000. Extended = 5000 * 1.5 = 7500. 5000 < 7500 -> KEEP
     const result = evaluateVariant(5000, 1, 5000);
     expect(result.action).toBe('KEEP');
   });
 
-  it('kills variant with opps when ratio exceeds extended threshold', () => {
-    // 6000 sent, 1 opp. Ratio = 6000. Extended threshold = 5000 * 1.1 = 5500.
-    // 6000 > 5500 -> KILL_CANDIDATE
-    const result = evaluateVariant(6000, 1, 5000);
+  it('keeps variant with 1 opp when ratio equals 1.5x threshold exactly', () => {
+    // 7500 sent, 1 opp. Ratio = 7500. Extended = 5000 * 1.5 = 7500. 7500 is NOT > 7500 -> KEEP
+    const result = evaluateVariant(7500, 1, 5000);
+    expect(result.action).toBe('KEEP');
+  });
+
+  it('kills variant with 1 opp when ratio exceeds 1.5x threshold', () => {
+    // 7501 sent, 1 opp. Ratio = 7501. Extended = 5000 * 1.5 = 7500. 7501 > 7500 -> KILL
+    const result = evaluateVariant(7501, 1, 5000);
+    expect(result.action).toBe('KILL_CANDIDATE');
+  });
+
+  // --- 2+ opp branch (no multiplier, base threshold) ---
+  it('keeps variant with 2 opps when ratio is below base threshold', () => {
+    // 4000 sent, 2 opps. Ratio = 2000. 2000 < 5000 -> KEEP
+    const result = evaluateVariant(5000, 2, 5000);
+    expect(result.action).toBe('KEEP');
+  });
+
+  it('keeps variant with 2 opps when ratio equals base threshold exactly', () => {
+    // 10000 sent, 2 opps. Ratio = 5000. 5000 is NOT > 5000 -> KEEP
+    const result = evaluateVariant(10000, 2, 5000);
+    expect(result.action).toBe('KEEP');
+  });
+
+  it('kills variant with 2 opps when ratio exceeds base threshold', () => {
+    // 10002 sent, 2 opps. Ratio = 5001. 5001 > 5000 -> KILL
+    const result = evaluateVariant(10002, 2, 5000);
+    expect(result.action).toBe('KILL_CANDIDATE');
+  });
+
+  it('kills variant with 10 opps when ratio exceeds base threshold', () => {
+    // 60000 sent, 10 opps. Ratio = 6000. 6000 > 5000 -> KILL
+    const result = evaluateVariant(60000, 10, 5000);
     expect(result.action).toBe('KILL_CANDIDATE');
   });
 });
@@ -58,13 +89,13 @@ describe('evaluateStep', () => {
     };
     const analytics: StepAnalytics[] = [
       { step: '0', variant: '0', sent: 5000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+      // Variant 1: 1 opp, ratio=5000. Extended threshold = 5000*1.5=7500. 5000 <= 7500 -> KEEP
       { step: '0', variant: '1', sent: 5000, replies: 0, unique_replies: 0, opportunities: 1, unique_opportunities: 1 },
       { step: '0', variant: '2', sent: 2000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
     ];
-    // Variant 0: 0 opps -> Infinity ratio (worst)
-    // Variant 1: ratio 5000, exceeds 5000*1.1=5500? No, 5000 <= 5500 -> KEEP
+    // Variant 0: 0 opps -> KILL_CANDIDATE (worst)
+    // Variant 1: ratio 5000, within single-opp extended threshold 7500 -> KEEP
     // Variant 2: below threshold -> SKIP
-    // Only variant 0 is a kill candidate
     const result = evaluateStep(analytics, step, 0, 5000);
     expect(result.kills).toHaveLength(1);
     expect(result.kills[0].variantIndex).toBe(0);
@@ -89,6 +120,75 @@ describe('checkVariantWarnings', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0].variantIndex).toBe(0);
     expect(warnings[0].pctConsumed).toBeGreaterThanOrEqual(70);
+  });
+
+  it('does not warn on a variant that will be killed (0 opps at threshold)', () => {
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [
+        { subject: 'A', body: 'a' },
+        { subject: 'B', body: 'b' },
+      ],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 5000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    // Variant 0 is at threshold with 0 opps - will be killed, not warned
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeUndefined();
+  });
+
+  it('warns on single-opp variant past base threshold but within 1.5x extended threshold', () => {
+    // 6000 sent, 1 opp. Past threshold (5000) but within extended (7500).
+    // evaluateVariant says KEEP - should get a warning.
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [
+        { subject: 'A', body: 'a' },
+        { subject: 'B', body: 'b' },
+      ],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 6000, replies: 0, unique_replies: 0, opportunities: 1, unique_opportunities: 1 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeDefined();
+  });
+
+  it('does not warn on single-opp variant that exceeds 1.5x extended threshold (will be killed)', () => {
+    // 7501 sent, 1 opp. Ratio 7501 > extended threshold 7500 -> will be killed.
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [
+        { subject: 'A', body: 'a' },
+        { subject: 'B', body: 'b' },
+      ],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 7501, replies: 0, unique_replies: 0, opportunities: 1, unique_opportunities: 1 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeUndefined();
+  });
+
+  it('does not warn on 2+ opp variant that exceeds base threshold (will be killed)', () => {
+    // 10002 sent, 2 opps. Ratio 5001 > base threshold 5000 -> will be killed, not warned.
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [
+        { subject: 'A', body: 'a' },
+        { subject: 'B', body: 'b' },
+      ],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 10002, replies: 0, unique_replies: 0, opportunities: 2, unique_opportunities: 2 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeUndefined();
   });
 });
 

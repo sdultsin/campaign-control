@@ -35,7 +35,7 @@ import {
   LEADS_EXHAUSTED_DEDUP_TTL_SECONDS,
   CM_MONITOR_CHANNELS,
   DASHBOARD_BASE_URL,
-  OPP_RUNWAY_MULTIPLIER,
+  SINGLE_OPP_RUNWAY_MULTIPLIER,
   getStepMultiplier,
   DRY_RUN_CMS,
   MAX_PERSISTENCE_CHECKS,
@@ -1164,8 +1164,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     isOff: isOffCampaign(campaign.name),
                   };
 
-                  const effectiveThreshold = opportunities > 0
-                    ? Math.round(stepThreshold * OPP_RUNWAY_MULTIPLIER)
+                  const effectiveThreshold = opportunities === 1
+                    ? Math.round(stepThreshold * SINGLE_OPP_RUNWAY_MULTIPLIER)
                     : stepThreshold;
                   const triggerRule =
                     opportunities === 0
@@ -1302,8 +1302,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     isOff: isOffCampaign(campaign.name),
                   };
 
-                  const effectiveThresholdBlocked = opportunities > 0
-                    ? Math.round(stepThreshold * OPP_RUNWAY_MULTIPLIER)
+                  const effectiveThresholdBlocked = opportunities === 1
+                    ? Math.round(stepThreshold * SINGLE_OPP_RUNWAY_MULTIPLIER)
                     : stepThreshold;
                   const blockedTriggerRule =
                     opportunities === 0
@@ -1432,8 +1432,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                           ? 'Infinity'
                           : (warning.sent / warning.opportunities).toFixed(1),
                         threshold: stepThreshold,
-                        effective_threshold: warning.opportunities > 0
-                          ? Math.round(stepThreshold * OPP_RUNWAY_MULTIPLIER)
+                        effective_threshold: warning.opportunities === 1
+                          ? Math.round(stepThreshold * SINGLE_OPP_RUNWAY_MULTIPLIER)
                           : stepThreshold,
                         rule: `${warning.pctConsumed}% of threshold consumed (${warning.sent}/${stepThreshold} sends)`,
                       },
