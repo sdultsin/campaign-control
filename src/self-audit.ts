@@ -127,11 +127,17 @@ async function checkRunCompletion(sb: SupabaseClient, runSummary: RunSummary): P
 
 async function checkKillIntegrity(sb: SupabaseClient): Promise<AuditCheckResult> {
   try {
-    const { data: kills } = await sb.from('audit_logs')
+    const { data: kills, error: killsError } = await sb.from('audit_logs')
       .select('campaign, step, variant, campaign_id')
       .eq('action', 'DISABLED')
       .eq('worker_version', WORKER_VERSION)
       .gt('timestamp', thirtyMinAgo());
+
+    if (killsError) {
+      return makeCheck('kill_integrity', 'CRITICAL', 'SKIP',
+        'Every kill has a dashboard_items entry',
+        `Supabase query error on audit_logs: ${killsError.message}`);
+    }
 
     if (!kills || kills.length === 0) {
       return makeCheck('kill_integrity', 'CRITICAL', 'SKIP',
@@ -139,8 +145,9 @@ async function checkKillIntegrity(sb: SupabaseClient): Promise<AuditCheckResult>
     }
 
     const missing: string[] = [];
+    let queryErrors = 0;
     for (const kill of kills) {
-      const { data: dashItems } = await sb.from('dashboard_items')
+      const { data: dashItems, error: dashError } = await sb.from('dashboard_items')
         .select('id')
         .eq('campaign_id', kill.campaign_id)
         .eq('step', kill.step)
@@ -149,21 +156,35 @@ async function checkKillIntegrity(sb: SupabaseClient): Promise<AuditCheckResult>
         .is('resolved_at', null)
         .limit(1);
 
+      if (dashError) {
+        queryErrors++;
+        continue;
+      }
+
       if (!dashItems || dashItems.length === 0) {
         missing.push(`${kill.campaign} step ${kill.step} var ${kill.variant}`);
       }
     }
 
+    // If ALL dashboard_items lookups errored, skip rather than false-positive
+    if (queryErrors > 0 && queryErrors === kills.length) {
+      return makeCheck('kill_integrity', 'CRITICAL', 'SKIP',
+        'Every kill has a dashboard_items entry',
+        `All ${queryErrors} dashboard_items lookups failed - Supabase query errors`);
+    }
+
+    const errorNote = queryErrors > 0 ? ` (${queryErrors} lookup errors skipped)` : '';
+
     if (missing.length > 0) {
       return makeCheck('kill_integrity', 'CRITICAL', 'FAIL',
         `${kills.length} kills all in dashboard_items`,
-        `${missing.length} kills missing from dashboard_items`,
+        `${missing.length} kills missing from dashboard_items${errorNote}`,
         missing.join('; '));
     }
 
     return makeCheck('kill_integrity', 'CRITICAL', 'PASS',
       `${kills.length} kills all in dashboard_items`,
-      `${kills.length}/${kills.length} verified`);
+      `${kills.length - queryErrors}/${kills.length} verified${errorNote}`);
   } catch (err) {
     return makeCheck('kill_integrity', 'CRITICAL', 'FAIL',
       'Kill integrity check', `Error: ${err}`, null);
@@ -743,7 +764,7 @@ async function buildKvSummary(kv: KVNamespace): Promise<KvSummary> {
 // ---------------------------------------------------------------------------
 
 async function writeAuditResult(sb: SupabaseClient, result: AuditResult): Promise<void> {
-  const { error } = await sb.from('audit_results').insert({
+  const payload = {
     run_timestamp: result.run_timestamp,
     worker_version: result.worker_version,
     verdict: result.verdict,
@@ -770,8 +791,19 @@ async function writeAuditResult(sb: SupabaseClient, result: AuditResult): Promis
     kv_summary: result.kv_summary,
     trailing_avg: result.trailing_avg,
     audit_duration_ms: result.audit_duration_ms,
-  });
-  if (error) console.error(`[self-audit] audit_results insert failed: ${error.message}`);
+  };
+
+  const { error } = await sb.from('audit_results').insert(payload);
+  if (!error) return;
+
+  console.error(`[self-audit] audit_results insert failed (attempt 1): ${error.message}`);
+
+  // Single retry after 1.5s delay
+  await new Promise((r) => setTimeout(r, 1500));
+  const { error: retryError } = await sb.from('audit_results').insert(payload);
+  if (retryError) {
+    console.error(`[self-audit] audit_results insert failed (attempt 2): ${retryError.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

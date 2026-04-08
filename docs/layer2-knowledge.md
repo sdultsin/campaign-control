@@ -64,6 +64,15 @@
 - **Files involved:** `src/self-audit.ts` (checkGhostAudit ~line 256, exempt key construction), `src/index.ts` (~line 2270 ghost_details step assignment, ~line 2316 exempt key write)
 - **How it was detected:** Layer 2 audit found ghost_audit FAIL with `missing exempt:...:1:3` while kv_summary showed `exempt_keys=1` at the 0-based index
 
+### 8. Kill Integrity False Positive (Supabase query error treated as missing data)
+- **Symptoms:** kill_integrity check reports N kills "missing from dashboard_items" when they actually exist. False positive FAIL verdict.
+- **Root cause:** `checkKillIntegrity` in `self-audit.ts` destructured only `{ data: dashItems }` from the Supabase dashboard_items query, ignoring the `error` field. When Supabase returns an error, `data` is null. The check `!dashItems || dashItems.length === 0` then evaluates true, counting the kill as "missing" when it's actually a query failure. Same pattern on the initial audit_logs query - an error there caused `kills` to be null, falling through to "No DISABLED actions this run" SKIP instead of surfacing the error.
+- **Bug class pattern:** **Supabase error field ignored, null data treated as empty result.** Every Supabase query returns `{ data, error }`. If only `data` is destructured, query failures silently become "no results found." Self-audit checks are especially vulnerable because they make multiple sequential queries and aggregate results.
+- **Investigation path:** If kill_integrity FAIL shows kills "missing from dashboard_items," verify the dashboard_items rows actually exist via direct query. If they do exist, the self-audit query likely errored. Check audit_results.check_results for kill_integrity entries with high missing counts that don't match manual verification.
+- **Files involved:** `src/self-audit.ts` (checkKillIntegrity ~line 128-171)
+- **Fix:** Check `error` field on both queries. Dashboard_items lookup errors increment a `queryErrors` counter and skip (don't count as missing). If ALL lookups errored, return SKIP. Error counts noted in the actual/detail fields.
+- **How it was detected:** 4 kills reported as "missing from dashboard_items" in kill_integrity FAIL, but all 4 existed in the table.
+
 ---
 
 # Section 2: Known Noise Patterns
