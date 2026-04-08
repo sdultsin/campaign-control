@@ -1,14 +1,14 @@
 name = "auto-turnoff"
 main = "src/index.ts"
 compatibility_date = "2025-03-15"
-account_id = "8eb4f67f852e00194242db7f998cb06b"
+account_id = "84ebd9102d6d7fe30ee0c9eb410461fc"
 
 [triggers]
 crons = ["0 10,12,13,14,16,18,19,21,23 * * *"]
 
 [[kv_namespaces]]
 binding = "KV"
-id = "c054b62e43b54a22bcc1ffa24bb72272"
+id = "6b2dee3078394a008e574df0df7806ff"
 
 [vars]
 DRY_RUN = "false"
