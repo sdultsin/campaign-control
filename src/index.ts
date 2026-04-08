@@ -56,6 +56,7 @@ import type {
 } from './types';
 
 import { runSelfAudit } from './self-audit';
+import { WORKER_VERSION } from './version';
 import { evaluateLeadDepletion } from './leads-monitor';
 import { buildDashboardState } from './dashboard-state';
 
@@ -2272,6 +2273,24 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   await env.KV.delete(key.name);
                   // Clear kill dedup so a future re-kill can notify
                   await env.KV.delete(`kill:${entry.campaignId}:${entry.stepIndex}:${entry.variantIndex}`).catch(() => {});
+
+                  // Resolve the DISABLED dashboard item for this specific variant
+                  if (sb) {
+                    const now = new Date().toISOString();
+                    const { error: resolveErr } = await sb
+                      .from('dashboard_items')
+                      .update({
+                        resolved_at: now,
+                        resolution_note: `Auto-resolved: Redemption Window re-enabled variant ${entry.variantLabel}`,
+                        worker_version: WORKER_VERSION,
+                      })
+                      .eq('campaign_id', entry.campaignId)
+                      .eq('item_type', 'DISABLED')
+                      .eq('step', entry.stepIndex + 1)
+                      .eq('variant', entry.variantIndex)
+                      .is('resolved_at', null);
+                    if (resolveErr) console.error(`[supabase] Failed to resolve DISABLED dashboard item after re-enable: ${resolveErr.message}`);
+                  }
                 } else {
                   console.error(
                     `[auto-turnoff] Rescan: enableVariant returned false for ${entry.campaignName} step=${entry.stepIndex + 1} variant=${entry.variantLabel}`,
