@@ -205,3 +205,12 @@ export const SLACK_SUPPRESSED = true;
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
 export const CRON_HOURS_UTC = [10, 13, 14, 16, 18, 19, 21, 23]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.
+
+/** Stale analytics guard: if sum of step sent < this fraction of campaign aggregate sent,
+ *  skip kill evaluation for that campaign and log STALE_ANALYTICS to audit_logs. */
+export const STALE_ANALYTICS_RATIO_THRESHOLD = 0.5;
+
+/** Minimum campaign aggregate sent for stale analytics check to apply.
+ *  Below this threshold, newly launched campaigns with few sends are exempt
+ *  (step and aggregate totals are both naturally low). */
+export const STALE_ANALYTICS_MIN_AGGREGATE_SENT = 2000;

@@ -1,5 +1,5 @@
 import type { Workspace, Campaign, CampaignDetail, StepAnalytics } from './types';
-import { WORKSPACE_CONFIGS } from './config';
+import { WORKSPACE_CONFIGS, STALE_ANALYTICS_RATIO_THRESHOLD, STALE_ANALYTICS_MIN_AGGREGATE_SENT } from './config';
 
 /**
  * Direct Instantly API client — bypasses MCP SSE entirely.
@@ -280,5 +280,53 @@ export class InstantlyDirectApi {
   ): Promise<void> {
     const key = this.getKey(workspaceId);
     await this.patch(`/campaigns/${campaignId}`, key, updates);
+  }
+
+  /**
+   * Cross-validate step analytics freshness for a campaign.
+   * Compares sum of step-level sent counts against the campaign-level aggregate sent.
+   * Returns { isStale: boolean, stepTotal: number, aggregateTotal: number, ratio: number }.
+   * If aggregate sent is below STALE_ANALYTICS_MIN_AGGREGATE_SENT, returns isStale: false
+   * (new campaigns with few sends are exempt from this check).
+   */
+  async checkAnalyticsFreshness(
+    workspaceId: string,
+    campaignId: string,
+    stepAnalytics: StepAnalytics[],
+  ): Promise<{ isStale: boolean; stepTotal: number; aggregateTotal: number; ratio: number }> {
+    const key = this.getKey(workspaceId);
+
+    let aggregateSent = 0;
+    try {
+      const raw = await this.get<Record<string, unknown>>(
+        '/campaigns/analytics',
+        key,
+        { campaign_id: campaignId },
+      );
+      // Response: { campaigns: [{ sent, ... }] } or direct object
+      if (Array.isArray((raw as any).campaigns) && (raw as any).campaigns.length > 0) {
+        aggregateSent = (raw as any).campaigns[0].sent ?? (raw as any).campaigns[0].contacted ?? 0;
+      } else {
+        aggregateSent = (raw.sent as number) ?? (raw.contacted as number) ?? 0;
+      }
+    } catch (e) {
+      console.warn(`[stale-guard] Failed to fetch aggregate analytics for ${campaignId}: ${e}`);
+      // Can't verify - treat as fresh to avoid blocking all kills on API error
+      return { isStale: false, stepTotal: 0, aggregateTotal: 0, ratio: 1 };
+    }
+
+    const stepTotal = stepAnalytics
+      .filter((r) => r.step !== null && r.step !== undefined && r.step !== 'null')
+      .reduce((sum, r) => sum + (r.sent ?? 0), 0);
+
+    // Exempt: aggregate too low to be meaningful
+    if (aggregateSent < STALE_ANALYTICS_MIN_AGGREGATE_SENT) {
+      return { isStale: false, stepTotal, aggregateTotal: aggregateSent, ratio: 1 };
+    }
+
+    const ratio = aggregateSent > 0 ? stepTotal / aggregateSent : 1;
+    const isStale = ratio < STALE_ANALYTICS_RATIO_THRESHOLD;
+
+    return { isStale, stepTotal, aggregateTotal: aggregateSent, ratio };
   }
 }

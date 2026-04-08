@@ -43,6 +43,7 @@ import {
   GHOST_NOTIFIED_TTL_SECONDS,
   WARM_LEADS_THRESHOLD,
   STEP_NEEDS_COPY_DEDUP_TTL_SECONDS,
+  STALE_ANALYTICS_RATIO_THRESHOLD,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
@@ -747,6 +748,56 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
               // b. Get step analytics (unfiltered -- date filters drop opps, see 2026-03-18 bug)
               const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
+
+              // b2. Stale analytics guard: cross-validate step totals vs campaign aggregate sent.
+              // Instantly bootstrapping lag (5+ days for new workspaces) causes step analytics
+              // to return ~40% of actual sent counts, leading to false kill candidates.
+              const freshnessCheck = instantly instanceof InstantlyDirectApi
+                ? await instantly.checkAnalyticsFreshness(workspace.id, campaign.id, allAnalytics)
+                : { isStale: false, stepTotal: 0, aggregateTotal: 0, ratio: 1 };
+              if (freshnessCheck.isStale) {
+                console.warn(
+                  `[stale-guard] SKIPPING ${campaign.name} - step analytics appear stale. ` +
+                  `stepTotal=${freshnessCheck.stepTotal} aggregateTotal=${freshnessCheck.aggregateTotal} ` +
+                  `ratio=${freshnessCheck.ratio.toFixed(2)} (threshold=${STALE_ANALYTICS_RATIO_THRESHOLD})`,
+                );
+                const staleNotifiedKey = `stale-notified:${campaign.id}`;
+                const alreadyLogged = await env.KV.get(staleNotifiedKey).catch(() => null);
+                if (!alreadyLogged) {
+                  const staleAudit: AuditEntry = {
+                    timestamp: new Date().toISOString(),
+                    action: 'STALE_ANALYTICS',
+                    workspace: workspace.name,
+                    workspaceId: workspace.id,
+                    campaign: campaign.name,
+                    campaignId: campaign.id,
+                    step: 0,
+                    variant: 0,
+                    variantLabel: '',
+                    cm: cmName ?? wsConfig.defaultCm ?? 'UNKNOWN',
+                    product: wsConfig.product,
+                    trigger: {
+                      sent: freshnessCheck.stepTotal,
+                      opportunities: freshnessCheck.aggregateTotal,
+                      ratio: freshnessCheck.ratio.toFixed(2),
+                      threshold: STALE_ANALYTICS_RATIO_THRESHOLD,
+                      rule: `stale:ratio=${freshnessCheck.ratio.toFixed(2)}:aggregate=${freshnessCheck.aggregateTotal}`,
+                    },
+                    safety: { survivingVariants: 0, notification: null },
+                    dryRun: isDryRun,
+                  };
+                  await writeAuditLog(env.KV, staleAudit).catch((err) =>
+                    console.error(`[auto-turnoff] Failed to write stale audit log: ${err}`),
+                  );
+                  if (sb) await writeAuditLogToSupabase(sb, staleAudit).catch((err) =>
+                    console.error(`[supabase] stale audit write failed: ${err}`),
+                  );
+                  await env.KV.put(staleNotifiedKey, '1', { expirationTtl: 86400 }).catch((err) =>
+                    console.error(`[stale-guard] KV dedup key write failed: ${err}`),
+                  );
+                }
+                return result; // skip this campaign entirely
+              }
 
               // c. Sequences guard
               if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) {
