@@ -877,21 +877,37 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   continue;
                 }
 
-                // --- FREEZE CHECK (Step 4a): skip frozen steps unless CM added new variants ---
+                // Compute analytics + threshold before freeze check (needed for rehabilitation unfreeze)
+                const stepAnalytics = primaryAnalytics.filter(
+                  (a) => parseInt(a.step, 10) === stepIndex,
+                );
+                const stepThreshold = Math.round(threshold * getStepMultiplier(stepIndex));
+
+                // --- FREEZE CHECK (Step 4a): skip frozen steps unless CM added new variants or a variant recovered ---
                 {
                   const freezeKey = `step-frozen:${campaign.id}:${stepIndex}`;
                   const freezeRaw = await env.KV.get(freezeKey);
                   if (freezeRaw) {
                     try {
-                      const frozen = JSON.parse(freezeRaw) as { variantCount: number; frozenAt: string };
-                      if (stepDetail.variants.length <= frozen.variantCount) {
+                      const frozen = JSON.parse(freezeRaw) as { variantCount: number; evaluatedCount?: number; frozenAt: string };
+
+                      // Rehabilitation check: unfreeze if any active variant is now performing well
+                      const hasRehabilitatedVariant = stepDetail.variants.some((v, vi) => {
+                        if (v.v_disabled) return false;
+                        const row = stepAnalytics.find((a) => parseInt(a.variant, 10) === vi);
+                        if (!row || row.sent < stepThreshold) return false;
+                        return evaluateVariant(row.sent, row.opportunities, stepThreshold).action === 'KEEP';
+                      });
+
+                      if (stepDetail.variants.length <= frozen.variantCount && !hasRehabilitatedVariant) {
+                        const displayCount = frozen.evaluatedCount ?? frozen.variantCount;
                         console.log(
-                          `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" is frozen (${frozen.variantCount} variants, frozen at ${frozen.frozenAt}) — skipping`,
+                          `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" is frozen (${displayCount} evaluated, ${frozen.variantCount} total, frozen at ${frozen.frozenAt}) — skipping`,
                         );
                         // Add to dashboard so STEP_FROZEN item persists
                         result.frozenSteps.push({
                           stepIndex,
-                          variantCount: frozen.variantCount,
+                          variantCount: displayCount,
                           reenabledVariants: [],
                           avgReplyRate: 0,
                           totalSent: 0,
@@ -905,16 +921,19 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                           stepIndex,
                           cm: cmName,
                           frozenAt: frozen.frozenAt,
-                          variantCount: frozen.variantCount,
+                          variantCount: displayCount,
                           reenabledVariants: [],
                           reason: 'uniform_underperformance',
                         });
                         continue;
                       }
-                      // CM added new variants — unfreeze
+                      // Unfreeze — CM added variants or a previously-killed variant recovered
                       await env.KV.delete(freezeKey);
+                      const unfreezeReason = hasRehabilitatedVariant
+                        ? 'variant recovered'
+                        : `CM added variants (was ${frozen.variantCount}, now ${stepDetail.variants.length})`;
                       console.log(
-                        `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" unfrozen — CM added variants (was ${frozen.variantCount}, now ${stepDetail.variants.length})`,
+                        `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" unfrozen — ${unfreezeReason}`,
                       );
                     } catch {
                       // Corrupt freeze key — delete and proceed
@@ -922,13 +941,6 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     }
                   }
                 }
-
-                const stepAnalytics = primaryAnalytics.filter(
-                  (a) => parseInt(a.step, 10) === stepIndex,
-                );
-
-                // Step-position multiplier: follow-up steps get proportionally more runway
-                const stepThreshold = Math.round(threshold * getStepMultiplier(stepIndex));
 
                 const { kills, blocked } = evaluateStep(
                   stepAnalytics,
@@ -1030,7 +1042,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     const frozenAt = new Date().toISOString();
                     await env.KV.put(`step-frozen:${campaign.id}:${stepIndex}`, JSON.stringify({
                       frozenAt,
-                      variantCount: stepDetail.variants.length,
+                      variantCount: stepDetail.variants.length,  // total variants — drives unfreeze condition
+                      evaluatedCount: activeNonSkipCount,          // active variants at freeze time — drives display
                       reenabledVariants: actualReenabled > 0 ? reenableList : [],
                       reason: 'uniform_underperformance',
                     }));
