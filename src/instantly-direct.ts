@@ -18,18 +18,23 @@ export class InstantlyDirectApi {
     } catch (e) {
       throw new Error(`[instantly-direct] Failed to parse INSTANTLY_API_KEYS JSON: ${e instanceof Error ? e.message : String(e)}`);
     }
-    this.keyMap = new Map(Object.entries(parsed));
+    // Store keys with lowercase lookup for case-insensitive matching.
+    // Instantly display names vary in casing ("Koi And Destroy" vs "Koi and Destroy").
+    this.keyMap = new Map<string, string>();
+    for (const [name, apiKey] of Object.entries(parsed)) {
+      this.keyMap.set(name.toLowerCase(), apiKey);
+    }
   }
 
   private getKey(workspaceId: string): string {
     // workspaceId is a slug like "the-dyad". Try direct lookup first.
-    let key = this.keyMap.get(workspaceId);
+    let key = this.keyMap.get(workspaceId.toLowerCase());
     if (key) return key;
 
     // Fallback: look up by display name from WORKSPACE_CONFIGS
     const config = WORKSPACE_CONFIGS.find((c) => c.id === workspaceId);
     if (config) {
-      key = this.keyMap.get(config.name);
+      key = this.keyMap.get(config.name.toLowerCase());
       if (key) return key;
     }
 
