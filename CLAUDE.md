@@ -104,6 +104,11 @@ Before any deploy, verify:
 8. Threshold logic matches spec
 9. API contracts correct (path vs query params, response shapes)
 
+## Documentation
+
+All documentation (specs, handoffs, bugs, reference) lives in Renaissance, not here.
+This repo contains code only. Do not create .md files here except README.md and CLAUDE.md.
+
 ## Rules
 
 - NEVER disable safety rails without explicit Sam approval
