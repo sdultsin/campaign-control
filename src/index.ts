@@ -202,7 +202,7 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
       const wsConfig = getWorkspaceConfig(workspace.id);
       if (!wsConfig) continue;
 
-      const campaigns = await getActiveCampaigns(bSb, workspace.id);
+      const campaigns = await getActiveCampaigns(bSb, workspace.id, wsConfig.name);
 
       if (!acc.byWorkspace[workspace.id]) {
         acc.byWorkspace[workspace.id] = {
@@ -656,7 +656,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
         try {
           const activeCampaigns = sb
-            ? await getActiveCampaigns(sb, workspace.id)
+            ? await getActiveCampaigns(sb, workspace.id, wsConfig.name)
             : [];
           const offCount = activeCampaigns.filter((c) => isOffCampaign(c.name)).length;
 
@@ -669,7 +669,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           // Fetch batch leads data for warm leads detection + leads depletion (Supabase)
           if (sb && !leadsBatchByWorkspace.has(workspace.id)) {
             try {
-              const batchMap = await getWorkspaceLeadsBatch(sb, workspace.id);
+              const batchMap = await getWorkspaceLeadsBatch(sb, workspace.id, wsConfig.name);
               leadsBatchByWorkspace.set(workspace.id, batchMap);
             } catch (batchErr) {
               console.warn(`[auto-turnoff] Batch leads fetch failed for ${workspace.name}: ${batchErr}`);
@@ -2345,7 +2345,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           for (const wsId of workspaceIds) {
             if (leadsBatchByWorkspace.has(wsId)) continue; // already cached from Phase 1
             try {
-              const batchMap = await getWorkspaceLeadsBatch(sb, wsId);
+              const wsName = getWorkspaceConfig(wsId)?.name;
+              const batchMap = await getWorkspaceLeadsBatch(sb, wsId, wsName);
               leadsBatchByWorkspace.set(wsId, batchMap);
             } catch (batchErr) {
               console.error(`[auto-turnoff] Batch leads fetch failed for workspace ${wsId}: ${batchErr}`);

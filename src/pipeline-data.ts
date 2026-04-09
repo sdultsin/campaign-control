@@ -37,11 +37,18 @@ export interface PipelineCampaignMeta {
 export async function getActiveCampaigns(
   sb: SupabaseClient,
   workspaceId: string,
+  workspaceName?: string,
 ): Promise<PipelineCampaign[]> {
+  // Pipeline Supabase has both slug ("renaissance-1") and display name ("Renaissance 1")
+  // workspace_id formats. Query both to catch all campaigns.
+  const wsIds = workspaceName && workspaceName !== workspaceId
+    ? [workspaceId, workspaceName]
+    : [workspaceId];
+
   const { data, error } = await sb
     .from('campaign_data')
     .select('campaign_id, campaign_name')
-    .eq('workspace_id', workspaceId)
+    .in('workspace_id', wsIds)
     .in('status', ['1', 'Active'])
     .neq('step', '__ALL__')
     .neq('variant', '__ALL__');
@@ -156,11 +163,16 @@ export async function getCampaignMeta(
 export async function getWorkspaceLeadsBatch(
   sb: SupabaseClient,
   workspaceId: string,
+  workspaceName?: string,
 ): Promise<Map<string, PipelineCampaignMeta>> {
+  const wsIds = workspaceName && workspaceName !== workspaceId
+    ? [workspaceId, workspaceName]
+    : [workspaceId];
+
   const { data, error } = await sb
     .from('campaign_data')
     .select('campaign_id, total_leads, leads_contacted, leads_completed, leads_bounced, leads_unsubscribed, daily_limit, infra_type')
-    .eq('workspace_id', workspaceId)
+    .in('workspace_id', wsIds)
     .eq('step', '__ALL__')
     .eq('variant', '__ALL__');
 
