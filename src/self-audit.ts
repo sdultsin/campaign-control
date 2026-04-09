@@ -712,7 +712,7 @@ async function fetchTrailingRuns(sb: SupabaseClient, currentTimestamp: string): 
 }
 
 async function fetchPriorAudit(sb: SupabaseClient): Promise<{ config_snapshot: AuditConfigSnapshot } | null> {
-  const { data } = await sb.from('audit_results')
+  const { data } = await sb.from('cc_audit_results')
     .select('config_snapshot')
     .order('created_at', { ascending: false })
     .limit(1);
@@ -793,16 +793,16 @@ async function writeAuditResult(sb: SupabaseClient, result: AuditResult): Promis
     audit_duration_ms: result.audit_duration_ms,
   };
 
-  const { error } = await sb.from('audit_results').insert(payload);
+  const { error } = await sb.from('cc_audit_results').insert(payload);
   if (!error) return;
 
-  console.error(`[self-audit] audit_results insert failed (attempt 1): ${error.message}`);
+  console.error(`[self-audit] cc_audit_results insert failed (attempt 1): ${error.message}`);
 
   // Single retry after 1.5s delay
   await new Promise((r) => setTimeout(r, 1500));
-  const { error: retryError } = await sb.from('audit_results').insert(payload);
+  const { error: retryError } = await sb.from('cc_audit_results').insert(payload);
   if (retryError) {
-    console.error(`[self-audit] audit_results insert failed (attempt 2): ${retryError.message}`);
+    console.error(`[self-audit] cc_audit_results insert failed (attempt 2): ${retryError.message}`);
   }
 }
 
@@ -812,7 +812,7 @@ async function writeAuditResult(sb: SupabaseClient, result: AuditResult): Promis
 
 async function cleanupOldAuditResults(sb: SupabaseClient): Promise<void> {
   const cutoff = new Date(Date.now() - 36 * 60 * 60 * 1000).toISOString();
-  const { error } = await sb.from('audit_results').delete().lt('created_at', cutoff);
+  const { error } = await sb.from('cc_audit_results').delete().lt('created_at', cutoff);
   if (error) console.error(`[self-audit] cleanup failed: ${error.message}`);
 }
 

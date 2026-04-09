@@ -123,7 +123,7 @@ function renderDateView(
   const next = nextDate(date);
   const today = todayUtc();
 
-  const filterLinks = ['all', 'DISABLED', 'BLOCKED', 'WARNING', 'RE_ENABLED', 'EXPIRED', 'CM_OVERRIDE', 'STALE_ANALYTICS']
+  const filterLinks = ['all', 'DISABLED', 'BLOCKED', 'WARNING', 'RE_ENABLED', 'EXPIRED', 'CM_OVERRIDE']
     .map((t) => {
       const active = t === typeFilter;
       return `<a href="/__dashboard?date=${date}&type=${t}" style="${active ? 'color:#60a5fa;font-weight:bold;' : 'color:#9ca3af;'}text-decoration:none;margin-right:12px;">${t}</a>`;

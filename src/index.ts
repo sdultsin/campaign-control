@@ -43,13 +43,12 @@ import {
   GHOST_NOTIFIED_TTL_SECONDS,
   WARM_LEADS_THRESHOLD,
   STEP_NEEDS_COPY_DEDUP_TTL_SECONDS,
-  STALE_ANALYTICS_RATIO_THRESHOLD,
 } from './config';
 import { resolveThreshold } from './thresholds';
 import { serveDashboard } from './dashboard';
 import { handleRevert } from './revert';
 import type {
-  Env, KillAction, CampaignDetail, StepAnalytics, AuditEntry, RunSummary, RescanEntry,
+  Env, KillAction, CampaignDetail, AuditEntry, RunSummary, RescanEntry,
   DailySnapshot, BaselineSnapshot, WorkspaceSnapshot, CmSnapshot, CampaignHealthEntry,
   LeadsCheckCandidate, LeadsWarningEntry, LeadsExhaustedEntry, LeadsAuditEntry,
   CampaignResult, WinnerEntry, GhostDetail, WarningDetail,
@@ -59,6 +58,11 @@ import { runSelfAudit } from './self-audit';
 import { WORKER_VERSION } from './version';
 import { evaluateLeadDepletion } from './leads-monitor';
 import { buildDashboardState } from './dashboard-state';
+import {
+  getActiveCampaigns, getVariantAnalytics, getCampaignMeta,
+  getWorkspaceLeadsBatch, getCampaignStructure,
+} from './pipeline-data';
+import type { PipelineCampaignMeta } from './pipeline-data';
 
 // ---------------------------------------------------------------------------
 // KV lock helpers
@@ -171,15 +175,16 @@ async function clearV1Keys(env: Env): Promise<Response> {
 
 async function serveBaseline(env: Env, params: URLSearchParams): Promise<Response> {
   const note = params.get('note') ?? 'Pre-go-live baseline';
-  const mcp = new McpClient();
-  const instantly = new InstantlyApi(mcp);
+
+  const bSb = (env.SUPABASE_URL && env.SUPABASE_ANON_KEY)
+    ? getSupabaseClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY)
+    : null;
+  if (!bSb) {
+    return Response.json({ error: 'No Supabase client configured' }, { status: 500 });
+  }
 
   try {
-    await mcp.connect();
-
-    const allWorkspaces = await instantly.listWorkspaces();
-    const configuredIds = new Set(WORKSPACE_CONFIGS.map((c) => c.id));
-    const monitoredWorkspaces = allWorkspaces.filter((ws) => configuredIds.has(ws.id));
+    const monitoredWorkspaces = WORKSPACE_CONFIGS.map((c) => ({ id: c.id, name: c.name }));
 
     const acc = {
       totalCampaigns: 0,
@@ -197,8 +202,7 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
       const wsConfig = getWorkspaceConfig(workspace.id);
       if (!wsConfig) continue;
 
-      const campaigns = await instantly.getCampaigns(workspace.id);
-      const activeCampaigns = campaigns;
+      const campaigns = await getActiveCampaigns(bSb, workspace.id);
 
       if (!acc.byWorkspace[workspace.id]) {
         acc.byWorkspace[workspace.id] = {
@@ -207,15 +211,14 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
         };
       }
 
-      for (const campaign of activeCampaigns) {
+      for (const campaign of campaigns) {
         try {
-          const campaignDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
+          const bStructure = await getCampaignStructure(bSb, campaign.id);
+          const bMeta = await getCampaignMeta(bSb, campaign.id);
 
-          if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) continue;
+          if (bStructure.stepCount === 0) continue;
 
-          const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
-
-          const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV, isOffCampaign(campaign.name));
+          const threshold = await resolveThreshold(workspace.id, campaign.id, bMeta.infra_type, env.KV, isOffCampaign(campaign.name));
           if (threshold === null) continue;
 
           const cmName = resolveCmName(wsConfig, campaign.name);
@@ -223,33 +226,26 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
           // Workspace-level exclusion: skip excluded CMs from snapshot aggregation
           if (isExcludedFromWorkspace(wsConfig.id, cmName)) continue;
 
-          const primaryStepCount = campaignDetail.sequences[0].steps.length;
-          const primaryAnalytics = allAnalytics.filter(
-            (a) => parseInt(a.step, 10) < primaryStepCount,
-          );
+          const primaryStepCount = bStructure.stepCount;
 
           acc.totalCampaigns++;
           let campTotal = 0, campActive = 0, campDisabled = 0, campAbove = 0;
 
           for (let si = 0; si < primaryStepCount; si++) {
-            const stepDetail = campaignDetail.sequences[0].steps[si];
+            const stepData = bStructure.variantsByStep.get(si);
+            if (!stepData) continue;
             const baselineStepThreshold = Math.round(threshold * getStepMultiplier(si));
             acc.totalSteps++;
 
-            for (let vi = 0; vi < stepDetail.variants.length; vi++) {
+            for (const v of stepData.variants) {
               campTotal++;
-              if (stepDetail.variants[vi].v_disabled === true) {
+              if (v.v_disabled === true) {
                 campDisabled++;
               } else {
                 campActive++;
-                const row = primaryAnalytics.find(
-                  (a) => parseInt(a.step, 10) === si && parseInt(a.variant, 10) === vi,
-                );
-                if (row) {
-                  const decision = evaluateVariant(row.sent, row.opportunities, baselineStepThreshold);
-                  if (decision.action === 'KILL_CANDIDATE') {
-                    campAbove++;
-                  }
+                const decision = evaluateVariant(v.sent, v.opportunities, baselineStepThreshold);
+                if (decision.action === 'KILL_CANDIDATE') {
+                  campAbove++;
                 }
               }
             }
@@ -327,8 +323,6 @@ async function serveBaseline(env: Env, params: URLSearchParams): Promise<Respons
       status: 500,
       headers: { 'Content-Type': 'application/json' },
     });
-  } finally {
-    await mcp.close().catch(() => {});
   }
 }
 
@@ -509,7 +503,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     const instantly = useDirectApi
       ? new InstantlyDirectApi(env.INSTANTLY_API_KEYS)
       : mcpApi;
-    // leadsApi removed — leads now use batch direct API (getBatchCampaignAnalytics)
+    // leadsApi removed — leads now read from Pipeline Supabase (getWorkspaceLeadsBatch)
 
     // Supabase client (null if env vars not set -- graceful degradation)
     const sb: SupabaseClient | null = (env.SUPABASE_URL && env.SUPABASE_ANON_KEY)
@@ -563,11 +557,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     const leadsCheckCandidates: LeadsCheckCandidate[] = [];
 
     // Batch analytics by workspace — fetched once in Phase 1 (warm leads filter),
-    // reused in Phase 3 (leads depletion monitor). Avoids duplicate API calls.
-    const leadsBatchByWorkspace = new Map<string, Map<string, {
-      leads_count: number; new_leads_contacted_count: number; contacted: number;
-      completed_count: number; bounced_count: number; unsubscribed_count: number;
-    }>>();
+    // reused in Phase 3 (leads depletion monitor). Now reads from Pipeline Supabase.
+    const leadsBatchByWorkspace = new Map<string, Map<string, PipelineCampaignMeta>>();
 
     // Dashboard state: collect BLOCKED, dry-run kills, warnings, and leads issues for Phase 5
     const dashboardBlocked: AuditEntry[] = [];
@@ -664,10 +655,10 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
         console.log(`[auto-turnoff] Processing workspace: ${workspace.name} [${wsConfig.product}]`);
 
         try {
-          const allCampaigns = await instantly.getCampaigns(workspace.id);
-
-          const activeCampaigns = allCampaigns;
-          const offCount = allCampaigns.filter((c) => isOffCampaign(c.name)).length;
+          const activeCampaigns = sb
+            ? await getActiveCampaigns(sb, workspace.id)
+            : [];
+          const offCount = activeCampaigns.filter((c) => isOffCampaign(c.name)).length;
 
           console.log(
             `[auto-turnoff] ${activeCampaigns.length} campaigns` +
@@ -675,13 +666,13 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               ` in ${workspace.name}`,
           );
 
-          // Fetch batch analytics for warm leads detection + leads depletion (1 API call per workspace)
-          if (useDirectApi && !leadsBatchByWorkspace.has(workspace.id)) {
+          // Fetch batch leads data for warm leads detection + leads depletion (Supabase)
+          if (sb && !leadsBatchByWorkspace.has(workspace.id)) {
             try {
-              const batchMap = await (instantly as InstantlyDirectApi).getBatchCampaignAnalytics(workspace.id);
+              const batchMap = await getWorkspaceLeadsBatch(sb, workspace.id);
               leadsBatchByWorkspace.set(workspace.id, batchMap);
             } catch (batchErr) {
-              console.warn(`[auto-turnoff] Batch analytics fetch failed for ${workspace.name}: ${batchErr}`);
+              console.warn(`[auto-turnoff] Batch leads fetch failed for ${workspace.name}: ${batchErr}`);
             }
           }
 
@@ -729,9 +720,10 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             const wsBatch = leadsBatchByWorkspace.get(workspace.id);
             if (wsBatch) {
               const campAnalytics = wsBatch.get(campaign.id);
-              if (campAnalytics && isWarmLeadsCampaign(campAnalytics.contacted)) {
+              const contactedCount = campAnalytics?.leads_contacted ?? 0;
+              if (campAnalytics && isWarmLeadsCampaign(contactedCount)) {
                 console.log(
-                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${campAnalytics.contacted} contacted < ${WARM_LEADS_THRESHOLD} threshold)`,
+                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${contactedCount} contacted < ${WARM_LEADS_THRESHOLD} threshold)`,
                 );
                 totalWarmLeadsSkipped++;
                 return result;
@@ -744,70 +736,26 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             try {
               result.evaluated = true;
 
-              // a. Get campaign details first (need sequences for kill writes)
-              const campaignDetail = await instantly.getCampaignDetails(workspace.id, campaign.id);
-
-              // b. Get step analytics (unfiltered -- date filters drop opps, see 2026-03-18 bug)
-              const allAnalytics = await instantly.getStepAnalytics(workspace.id, campaign.id);
-
-              // b2. Stale analytics guard: cross-validate step totals vs campaign aggregate sent.
-              // Instantly bootstrapping lag (5+ days for new workspaces) causes step analytics
-              // to return ~40% of actual sent counts, leading to false kill candidates.
-              const freshnessCheck = instantly instanceof InstantlyDirectApi
-                ? await instantly.checkAnalyticsFreshness(workspace.id, campaign.id, allAnalytics)
-                : { isStale: false, stepTotal: 0, aggregateTotal: 0, ratio: 1 };
-              if (freshnessCheck.isStale) {
-                console.warn(
-                  `[stale-guard] SKIPPING ${campaign.name} - step analytics appear stale. ` +
-                  `stepTotal=${freshnessCheck.stepTotal} aggregateTotal=${freshnessCheck.aggregateTotal} ` +
-                  `ratio=${freshnessCheck.ratio.toFixed(2)} (threshold=${STALE_ANALYTICS_RATIO_THRESHOLD})`,
-                );
-                const staleNotifiedKey = `stale-notified:${campaign.id}`;
-                const alreadyLogged = await env.KV.get(staleNotifiedKey).catch(() => null);
-                if (!alreadyLogged) {
-                  const staleAudit: AuditEntry = {
-                    timestamp: new Date().toISOString(),
-                    action: 'STALE_ANALYTICS',
-                    workspace: workspace.name,
-                    workspaceId: workspace.id,
-                    campaign: campaign.name,
-                    campaignId: campaign.id,
-                    step: 0,
-                    variant: 0,
-                    variantLabel: '',
-                    cm: cmName ?? wsConfig.defaultCm ?? 'UNKNOWN',
-                    product: wsConfig.product,
-                    trigger: {
-                      sent: freshnessCheck.stepTotal,
-                      opportunities: freshnessCheck.aggregateTotal,
-                      ratio: freshnessCheck.ratio.toFixed(2),
-                      threshold: STALE_ANALYTICS_RATIO_THRESHOLD,
-                      rule: `stale:ratio=${freshnessCheck.ratio.toFixed(2)}:aggregate=${freshnessCheck.aggregateTotal}`,
-                    },
-                    safety: { survivingVariants: 0, notification: null },
-                    dryRun: isDryRun,
-                  };
-                  await writeAuditLog(env.KV, staleAudit).catch((err) =>
-                    console.error(`[auto-turnoff] Failed to write stale audit log: ${err}`),
-                  );
-                  if (sb) await writeAuditLogToSupabase(sb, staleAudit).catch((err) =>
-                    console.error(`[supabase] stale audit write failed: ${err}`),
-                  );
-                  await env.KV.put(staleNotifiedKey, '1', { expirationTtl: 86400 }).catch((err) =>
-                    console.error(`[stale-guard] KV dedup key write failed: ${err}`),
-                  );
-                }
-                return result; // skip this campaign entirely
-              }
-
-              // c. Sequences guard
-              if (!campaignDetail.sequences?.length || !campaignDetail.sequences[0]?.steps?.length) {
-                console.warn(`[auto-turnoff] Campaign ${campaign.id} (${campaign.name}) has no sequences, skipping`);
+              if (!sb) {
+                console.warn(`[auto-turnoff] No Supabase client for campaign ${campaign.id} — skipping`);
                 return result;
               }
 
-              // d. Resolve threshold (needs campaign details for email_tag_list)
-              const threshold = await resolveThreshold(workspace.id, campaignDetail, instantly, env.KV, isOffCampaign(campaign.name));
+              // a. Get campaign structure + meta from Pipeline Supabase
+              const structure = await getCampaignStructure(sb, campaign.id);
+              const meta = await getCampaignMeta(sb, campaign.id);
+
+              // b. Get variant analytics from Pipeline Supabase (already 0-indexed)
+              const allVariantRows = await getVariantAnalytics(sb, campaign.id);
+
+              // c. Structure guard (replaces sequences guard)
+              if (structure.stepCount === 0) {
+                console.warn(`[auto-turnoff] Campaign ${campaign.id} (${campaign.name}) has no steps in Supabase, skipping`);
+                return result;
+              }
+
+              // d. Resolve threshold (uses infra_type from Supabase instead of email_tag_list)
+              const threshold = await resolveThreshold(workspace.id, campaign.id, meta.infra_type, env.KV, isOffCampaign(campaign.name));
               if (threshold === null) {
                 console.warn(
                   `[auto-turnoff] Could not resolve threshold for campaign "${campaign.name}" — skipping`,
@@ -818,7 +766,18 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               // Resolve channel based on CM name
               const channelId = resolveChannel(cmName, env.SLACK_FALLBACK_CHANNEL);
 
-              const primaryStepCount = campaignDetail.sequences[0].steps.length;
+              const primaryStepCount = structure.stepCount;
+              // Build analytics arrays compatible with existing evaluator code
+              // allAnalytics: array with string step/variant for legacy compatibility in eval loop
+              const allAnalytics = allVariantRows.map((v) => ({
+                step: String(v.step),
+                variant: String(v.variant),
+                sent: v.sent,
+                replies: 0,
+                unique_replies: 0,
+                opportunities: v.opportunities,
+                unique_opportunities: v.opportunities,
+              }));
               const primaryAnalytics = allAnalytics.filter(
                 (a) => parseInt(a.step, 10) < primaryStepCount,
               );
@@ -827,23 +786,19 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               let campTotal = 0, campActive = 0, campDisabled = 0, campAbove = 0;
 
               for (let si = 0; si < primaryStepCount; si++) {
-                const snapStep = campaignDetail.sequences[0].steps[si];
+                const stepData = structure.variantsByStep.get(si);
+                if (!stepData) continue;
                 const snapStepThreshold = Math.round(threshold * getStepMultiplier(si));
 
-                for (let vi = 0; vi < snapStep.variants.length; vi++) {
+                for (const v of stepData.variants) {
                   campTotal++;
-                  if (snapStep.variants[vi].v_disabled === true) {
+                  if (v.v_disabled === true) {
                     campDisabled++;
                   } else {
                     campActive++;
-                    const row = primaryAnalytics.find(
-                      (a) => parseInt(a.step, 10) === si && parseInt(a.variant, 10) === vi,
-                    );
-                    if (row) {
-                      const decision = evaluateVariant(row.sent, row.opportunities, snapStepThreshold);
-                      if (decision.action === 'KILL_CANDIDATE') {
-                        campAbove++;
-                      }
+                    const decision = evaluateVariant(v.sent, v.opportunities, snapStepThreshold);
+                    if (decision.action === 'KILL_CANDIDATE') {
+                      campAbove++;
                     }
                   }
                 }
@@ -872,7 +827,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               };
 
               // --- LEADS DEPLETION: collect candidate for Phase 3 ---
-              const dailyLimit = (campaignDetail as Record<string, unknown>).daily_limit as number | undefined;
+              const dailyLimit = meta.daily_limit;
               if (dailyLimit && dailyLimit > 0) {
                 result.leadsCandidate = {
                   workspaceId: workspace.id,
@@ -890,11 +845,11 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               }
 
               // e. Sanity check: Step 1 total sent should not exceed campaign contacted count.
-              // The Instantly API sometimes returns inflated step analytics.
+              // Pipeline data comes from same source so less likely to be inflated,
+              // but keep the guard for safety.
               const step1Analytics = allAnalytics.filter(a => parseInt(a.step, 10) === 0);
               const step1TotalSent = step1Analytics.reduce((sum, a) => sum + a.sent, 0);
-              const campaignAnalytics = await instantly.getCampaignAnalytics(workspace.id, campaign.id);
-              const contactedCount = campaignAnalytics.contacted;
+              const contactedCount = meta.contacted_count ?? 0;
 
               if (hasDataIntegrityIssue(step1TotalSent, contactedCount)) {
                 console.warn(
@@ -919,7 +874,23 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
               // f. FOR EACH STEP in primary sequence
               for (let stepIndex = 0; stepIndex < primaryStepCount; stepIndex++) {
-                const stepDetail = campaignDetail.sequences[0].steps[stepIndex];
+                // Build a stepDetail-compatible object from Pipeline Supabase structure data.
+                // This preserves compatibility with evaluateStep() and downstream code.
+                const stepData = structure.variantsByStep.get(stepIndex);
+                if (!stepData) {
+                  console.warn(`[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" — no data in Supabase, skipping`);
+                  continue;
+                }
+                const stepDetail = {
+                  type: 'email',
+                  delay: 0,
+                  delay_unit: 'days',
+                  variants: stepData.variants.map((v) => ({
+                    subject: '',
+                    body: '',
+                    v_disabled: v.v_disabled,
+                  })),
+                };
 
                 // Skip steps where all variants are already disabled
                 if (stepDetail.variants.every((v) => v.v_disabled)) {
@@ -1047,8 +1018,10 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         );
                       } else {
                         try {
+                          // Fetch fresh sequences from Instantly API (sequences not in Supabase)
+                          const freshForFreeze = await instantly.getCampaignDetails(workspace.id, campaign.id);
                           // Batch re-enable: clone sequences, set v_disabled = false, single API call
-                          const cloned = structuredClone(campaignDetail.sequences);
+                          const cloned = structuredClone(freshForFreeze.sequences);
                           for (const vi of reenableList) {
                             const v = cloned?.[0]?.steps?.[stepIndex]?.variants?.[vi];
                             if (v) v.v_disabled = false;
@@ -2079,20 +2052,20 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             totalRescanChecked++;
             totalExpired++;
 
-            // Try to fetch current analytics for the audit log
+            // Try to fetch current analytics for the audit log (from Pipeline Supabase)
             let expiredSent = entry.sent;
             let expiredOpps = entry.opportunities;
             let ruleNote = '';
             try {
-              const freshAnalytics = await instantly.getStepAnalytics(
-                entry.workspaceId, entry.campaignId,
+              const freshVariants = sb
+                ? await getVariantAnalytics(sb, entry.campaignId)
+                : [];
+              const vRow = freshVariants.find(
+                (v) => v.step === entry.stepIndex && v.variant === entry.variantIndex,
               );
-              const variantRow = freshAnalytics.find(
-                (a) => parseInt(a.step, 10) === entry.stepIndex && parseInt(a.variant, 10) === entry.variantIndex,
-              );
-              if (variantRow) {
-                expiredSent = variantRow.sent;
-                expiredOpps = variantRow.opportunities;
+              if (vRow) {
+                expiredSent = vRow.sent;
+                expiredOpps = vRow.opportunities;
               } else {
                 ruleNote = ' (campaign may have been deleted)';
               }
@@ -2150,12 +2123,12 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             // Fetch campaign details (needed for re-enable if rescan passes)
             const campaignDetail = await instantly.getCampaignDetails(entry.workspaceId, entry.campaignId);
 
-            // Fetch fresh analytics (unfiltered — validated as accurate)
-            const freshAnalytics = await instantly.getStepAnalytics(
-              entry.workspaceId, entry.campaignId,
-            );
-            const variantRow = freshAnalytics.find(
-              (a) => parseInt(a.step, 10) === entry.stepIndex && parseInt(a.variant, 10) === entry.variantIndex,
+            // Fetch fresh analytics from Pipeline Supabase
+            const freshVariantRows = sb
+              ? await getVariantAnalytics(sb, entry.campaignId)
+              : [];
+            const variantRow = freshVariantRows.find(
+              (v) => v.step === entry.stepIndex && v.variant === entry.variantIndex,
             );
 
             if (!variantRow) {
@@ -2278,7 +2251,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   if (sb) {
                     const now = new Date().toISOString();
                     const { error: resolveErr } = await sb
-                      .from('dashboard_items')
+                      .from('cc_dashboard_items')
                       .update({
                         resolved_at: now,
                         resolution_note: `Auto-resolved: Redemption Window re-enabled variant ${entry.variantLabel}`,
@@ -2365,19 +2338,17 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
           console.log(`[auto-turnoff] Leads check: evaluating ${leadsCheckCandidates.length} campaigns`);
         }
 
-        // Batch analytics fetched in Phase 1. Still used for `contacted` (lifetime counter) in logging.
-        // NOTE: leads_count from batch analytics is always 0 — do NOT use for depletion evaluation.
-        // Actual lead counts come from per-campaign /leads/count calls below.
-        if (useDirectApi && leadsCheckCandidates.length > 0) {
-          const directApi = instantly as InstantlyDirectApi;
+        // Batch leads data fetched in Phase 1 from Pipeline Supabase.
+        // Fill in any missing workspaces (shouldn't happen but defensive).
+        if (sb && leadsCheckCandidates.length > 0) {
           const workspaceIds = [...new Set(leadsCheckCandidates.map((c) => c.workspaceId))];
           for (const wsId of workspaceIds) {
             if (leadsBatchByWorkspace.has(wsId)) continue; // already cached from Phase 1
             try {
-              const batchMap = await directApi.getBatchCampaignAnalytics(wsId);
+              const batchMap = await getWorkspaceLeadsBatch(sb, wsId);
               leadsBatchByWorkspace.set(wsId, batchMap);
             } catch (batchErr) {
-              console.error(`[auto-turnoff] Batch analytics fetch failed for workspace ${wsId}: ${batchErr}`);
+              console.error(`[auto-turnoff] Batch leads fetch failed for workspace ${wsId}: ${batchErr}`);
             }
           }
         }
@@ -2393,23 +2364,23 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             let contacted: number;
             let uncontacted: number;
 
-            // Use batch analytics for all lead counts — new_leads_contacted_count is
-            // the canonical "leads sent at least one email" field (matches Instantly UI
-            // "sequence started"). active = total - contacted (uncontacted leads remaining).
+            // Use Pipeline Supabase batch data for lead counts.
+            // leads_contacted is the canonical "leads sent at least one email" field.
+            // active = total - contacted (uncontacted leads remaining).
             const wsMap = leadsBatchByWorkspace.get(candidate.workspaceId);
             const batchData = wsMap?.get(candidate.campaignId);
             if (!batchData) {
-              console.warn(`[auto-turnoff] No batch analytics for campaign ${candidate.campaignId} — skipping leads check`);
+              console.warn(`[auto-turnoff] No batch data for campaign ${candidate.campaignId} — skipping leads check`);
               leadsCheckErrors++;
               continue;
             }
 
-            totalLeads = batchData.leads_count;
-            completed = batchData.completed_count;
-            bounced = batchData.bounced_count;        // email-level delivery failures (not lead status)
-            unsubscribed = batchData.unsubscribed_count;
+            totalLeads = batchData.total_leads ?? 0;
+            completed = batchData.leads_completed ?? 0;
+            bounced = batchData.leads_bounced ?? 0;
+            unsubscribed = batchData.leads_unsubscribed ?? 0;
             skipped = 0;
-            contacted = batchData.new_leads_contacted_count;
+            contacted = batchData.leads_contacted ?? 0;
             active = Math.max(0, totalLeads - contacted);   // uncontacted leads remaining
             uncontacted = active;
 

@@ -228,7 +228,7 @@ export interface WinnerEntry {
 
 export interface AuditEntry {
   timestamp: string;
-  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED' | 'STEP_FROZEN' | 'STALE_ANALYTICS';
+  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED' | 'STEP_FROZEN';
   workspace: string;
   workspaceId: string;
   campaign: string;
