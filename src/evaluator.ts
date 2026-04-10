@@ -140,22 +140,27 @@ export function checkVariantWarnings(
     const sent = variantAnalytics.sent;
     const opportunities = variantAnalytics.opportunities;
 
-    // Calculate consumption percentage
-    const pctConsumed = (sent / threshold) * 100;
+    // Compare variant against the actual kill metric (ratio), not raw sends.
+    // Mirrors the 3-branch kill logic in evaluateVariant:
+    //   0 opps -> killed when sent >= threshold
+    //   1 opp  -> killed when ratio > threshold * SINGLE_OPP_RUNWAY_MULTIPLIER
+    //   2+ opps -> killed when ratio > threshold
+    const effectiveRatio = opportunities === 0 ? sent : sent / opportunities;
+    const effectiveKill =
+      opportunities === 1 ? threshold * SINGLE_OPP_RUNWAY_MULTIPLIER : threshold;
+    const pctConsumed = (effectiveRatio / effectiveKill) * 100;
     if (pctConsumed < LAST_VARIANT_WARNING_PCT * 100) continue;
 
-    // Only skip variants that will actually be killed by evaluateVariant.
-    // Mirror the 3-branch kill logic exactly so warnings only fire for kept variants.
+    // Still skip variants that will be killed this cycle.
     if (sent >= threshold) {
       if (opportunities === 0) continue;  // will be killed (0 opps)
       const ratio = sent / opportunities;
       if (opportunities === 1) {
-        const effectiveKillThreshold = threshold * SINGLE_OPP_RUNWAY_MULTIPLIER;
-        if (ratio > effectiveKillThreshold) continue;  // will be killed (single-opp threshold exceeded)
+        if (ratio > threshold * SINGLE_OPP_RUNWAY_MULTIPLIER) continue;
       } else {
-        if (ratio > threshold) continue;  // will be killed (2+ opps, base threshold exceeded)
+        if (ratio > threshold) continue;
       }
-      // Variant is past minimum gate but kept alive - generate warning
+      // Variant is past send threshold but kept alive on ratio - generate warning
     }
 
     warnings.push({

@@ -190,6 +190,49 @@ describe('checkVariantWarnings', () => {
     const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
     expect(warnings.find((w) => w.variantIndex === 0)).toBeUndefined();
   });
+
+  it('does not warn on a healthy 2+ opp variant past send threshold (ratio well under kill line)', () => {
+    // 8844 sent, 3 opps -> ratio 2948. Threshold 5000. Ratio is 59% of kill line.
+    // This is the Leo bug scenario.
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [{ subject: 'A', body: 'a' }, { subject: 'B', body: 'b' }],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 8844, replies: 0, unique_replies: 0, opportunities: 3, unique_opportunities: 3 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeUndefined();
+  });
+
+  it('warns on a 2+ opp variant approaching the ratio kill line', () => {
+    // 7000 sent, 2 opps -> ratio 3500 = 70% of 5000 threshold. Should warn.
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [{ subject: 'A', body: 'a' }, { subject: 'B', body: 'b' }],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 7000, replies: 0, unique_replies: 0, opportunities: 2, unique_opportunities: 2 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeDefined();
+  });
+
+  it('does not warn on a highly productive variant with many opps and high sends', () => {
+    // Step 2 Leo bug: 9224 sent, 8 opps -> ratio 1153. Threshold 5000. 23% of kill line.
+    const step: Step = {
+      type: 'email', delay: 1, delay_unit: 'day',
+      variants: [{ subject: 'A', body: 'a' }, { subject: 'B', body: 'b' }],
+    };
+    const analytics: StepAnalytics[] = [
+      { step: '0', variant: '0', sent: 9224, replies: 0, unique_replies: 0, opportunities: 8, unique_opportunities: 8 },
+      { step: '0', variant: '1', sent: 1000, replies: 0, unique_replies: 0, opportunities: 0, unique_opportunities: 0 },
+    ];
+    const warnings = checkVariantWarnings(step, analytics, 0, 5000, []);
+    expect(warnings.find((w) => w.variantIndex === 0)).toBeUndefined();
+  });
 });
 
 describe('evaluateWinner', () => {
