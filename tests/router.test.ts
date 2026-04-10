@@ -34,12 +34,9 @@ describe('resolveCmName', () => {
 });
 
 describe('isExcludedFromWorkspace', () => {
-  it('excludes SAMUEL from the-eagles', () => {
-    expect(isExcludedFromWorkspace('the-eagles', 'SAMUEL')).toBe(true);
-  });
-
-  it('does not exclude other CMs from the-eagles', () => {
+  it('does not exclude any CMs (no current exclusions configured)', () => {
     expect(isExcludedFromWorkspace('the-eagles', 'LEO')).toBe(false);
+    expect(isExcludedFromWorkspace('the-eagles', 'IDO')).toBe(false);
   });
 });
 
