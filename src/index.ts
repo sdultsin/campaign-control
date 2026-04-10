@@ -33,6 +33,7 @@ import {
   MAX_KILLS_PER_RUN,
   LEADS_WARNING_DEDUP_TTL_SECONDS,
   LEADS_EXHAUSTED_DEDUP_TTL_SECONDS,
+  LEADS_MONITOR_ENABLED,
   CM_MONITOR_CHANNELS,
   DASHBOARD_BASE_URL,
   SINGLE_OPP_RUNWAY_MULTIPLIER,
@@ -2329,9 +2330,12 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
       }
 
       // PHASE 3: LEADS DEPLETION MONITOR
-      console.log(JSON.stringify({ event: 'phase_start', phase: 'leads', elapsedMs: Date.now() - runStart, candidates: leadsCheckCandidates.length }));
+      console.log(JSON.stringify({ event: 'phase_start', phase: 'leads', elapsedMs: Date.now() - runStart, candidates: leadsCheckCandidates.length, enabled: LEADS_MONITOR_ENABLED }));
       let leadsCheckErrors = 0;
       try {
+        if (!LEADS_MONITOR_ENABLED) {
+          console.log(`[auto-turnoff] Leads check: SKIPPED (LEADS_MONITOR_ENABLED=false). ${leadsCheckCandidates.length} candidates ignored.`);
+        } else {
         if (leadsCheckCandidates.length === 0) {
           console.warn(`[auto-turnoff] Leads check: 0 candidates collected — campaigns may be missing daily_limit field. Evaluated ${totalCampaignsEvaluated} campaigns in Phase 1.`);
         } else {
@@ -2661,6 +2665,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             `[auto-turnoff] Leads check complete: checked=${totalLeadsChecked} warnings=${totalLeadsWarnings} exhausted=${totalLeadsExhausted} recovered=${totalLeadsRecovered}`,
           );
         }
+        } // end if (LEADS_MONITOR_ENABLED)
       } catch (leadsPhaseErr) {
         console.error(`[auto-turnoff] Leads depletion phase error: ${leadsPhaseErr}`);
       }

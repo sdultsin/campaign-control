@@ -5,7 +5,6 @@ export const CM_CHANNEL_MAP: Record<string, string> = {
   'ANDRES': 'C0ADASDL7PH',
   'LEO': 'C0A618T6BF1',
   'CARLOS': 'C0A618X6ST1',
-  'SAMUEL': 'C0A6EM740NA',
   'IDO': 'C0A6GNNG198',
   'ALEX': 'C0A8KUADR4Z',
   'MARCOS': 'C0AELJPTF4Y',
@@ -119,15 +118,13 @@ export function getWorkspaceConfig(workspaceId: string): WorkspaceConfig | null 
 // in a specific workspace are skipped (e.g. CM moved workspaces but old
 // campaigns remain). Does not affect the CM in other workspaces.
 // ---------------------------------------------------------------------------
-export const WORKSPACE_CM_EXCLUSIONS: Record<string, Set<string>> = {
-  'the-eagles': new Set(['SAMUEL']),
-};
+export const WORKSPACE_CM_EXCLUSIONS: Record<string, Set<string>> = {};
 
 // ---------------------------------------------------------------------------
 // Pilot mode: only these CMs get evaluated and notified.
 // Remove this filter (or empty the set) to go full-fleet.
 // ---------------------------------------------------------------------------
-export const PILOT_CMS: Set<string> = new Set(['ALEX', 'ANDRES', 'BRENDAN', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAM', 'SAMUEL', 'SHAAN', 'TOMI']);
+export const PILOT_CMS: Set<string> = new Set(['ALEX', 'ANDRES', 'BRENDAN', 'CARLOS', 'EYVER', 'IDO', 'LAUTARO', 'LEO', 'MARCOS', 'SAM', 'SHAAN', 'TOMI']);
 
 // ---------------------------------------------------------------------------
 // Per-CM dry run: CMs in this set are evaluated and logged (dashboard populates)
@@ -147,7 +144,6 @@ export const CM_MONITOR_CHANNELS: Record<string, string> = {
   'LAUTARO': 'C0AMXSTGEF9',  // #cc-lautaro
   'LEO': 'C0ANK3F1ED8',      // #cc-leo
   'MARCOS': 'C0ANH1S3K2S',   // #cc-marcos
-  'SAMUEL': 'C0AMCMVLVDG',   // #cc-samuel
   'SAM': 'C0AR0EA21C1',       // #cc-sam
   'SHAAN': 'C0AQMTQTM6H',   // #cc-shaan
   'TOMI': 'C0ANFLJPS69',     // #cc-tomi
@@ -176,6 +172,12 @@ export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
 // Leads depletion monitor: absolute thresholds (replaces dailyLimit-based logic)
 export const LEADS_EXHAUSTED_THRESHOLD = 0;
 export const LEADS_WARNING_THRESHOLD = 5000;
+
+// TEMPORARY: leads monitor disabled while lead-data accuracy is being rebuilt.
+// When false, Phase 3 (leads depletion check) is skipped entirely — no
+// LEADS_EXHAUSTED / LEADS_WARNING audit entries, no Slack pings, no dashboard
+// items. Set back to true once the lead pipeline is verified.
+export const LEADS_MONITOR_ENABLED = false;
 
 /**
  * Campaigns with fewer than this many leads are "warm leads" campaigns.
