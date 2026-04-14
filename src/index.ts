@@ -677,6 +677,31 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             }
           }
 
+          // Finished campaigns can fall out of activeCampaigns before their
+          // old dashboard items are cleaned up. Resolve those explicitly when
+          // the current rollup total_leads says they are out of warm-leads scope.
+          const wsBatch = leadsBatchByWorkspace.get(workspace.id);
+          if (sb && wsBatch) {
+            const activeCampaignIds = new Set(activeCampaigns.map((campaign) => campaign.id));
+            for (const [campaignId, campaignMeta] of wsBatch) {
+              if (activeCampaignIds.has(campaignId)) continue;
+              const totalLeads = campaignMeta.total_leads;
+              if (totalLeads === null || !isWarmLeadsCampaign(totalLeads)) continue;
+
+              const resolvedItems = await resolveCampaignDashboardItems(
+                sb,
+                campaignId,
+                runTimestamp,
+                'excluded_warm_leads',
+              );
+              if (resolvedItems > 0) {
+                console.log(
+                  `[auto-turnoff] Warm leads cleanup: resolved ${resolvedItems} dashboard item(s) for inactive campaign ${campaignId}`,
+                );
+              }
+            }
+          }
+
           // Process campaigns with concurrency cap
           const campaignResults = await processWithConcurrency(activeCampaigns, concurrencyCap, async (campaign) => {
             const result: CampaignResult = {
