@@ -228,7 +228,7 @@ export interface WinnerEntry {
 
 export interface AuditEntry {
   timestamp: string;
-  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED' | 'STEP_FROZEN';
+  action: 'DISABLED' | 'BLOCKED' | 'WARNING' | 'RE_ENABLED' | 'STEP_UNFROZEN' | 'EXPIRED' | 'CM_OVERRIDE' | 'DEFERRED' | 'MANUAL_REVERT' | 'GHOST_REENABLE' | 'WINNER_DETECTED' | 'STEP_FROZEN';
   workspace: string;
   workspaceId: string;
   campaign: string;
@@ -391,6 +391,8 @@ export interface CampaignResult {
   kills: number;
   /** Blocked audit entries (last-variant blocks + KILLS_ENABLED=false blocks) */
   blocked: AuditEntry[];
+  /** Confirmed kill audit entries (for permanent DISABLED dashboard items) */
+  confirmedKills: AuditEntry[];
   /** Dry-run kill audit entries (for per-CM dashboard review) */
   dryRunKills: AuditEntry[];
   /** Number of variants warned */
@@ -431,7 +433,7 @@ export interface CampaignResult {
 
 // --- Dashboard state types ---
 
-export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'STEP_FROZEN' | 'WINNING';
+export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'DRY_RUN_KILL' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'STEP_FROZEN' | 'WINNING';
 export type DashboardSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 export interface DashboardItem {

@@ -295,6 +295,66 @@ export async function upsertDashboardItem(
   }
 }
 
+export async function resolveDashboardItem(
+  sb: SupabaseClient,
+  key: {
+    campaign_id: string;
+    item_type: DashboardItemType;
+    step: number | null;
+    variant: number | null;
+    resolution_method: string;
+  },
+): Promise<boolean> {
+  let query = sb
+    .from('cc_dashboard_items')
+    .select('id, cm, campaign_name, workspace_id, created_at')
+    .eq('campaign_id', key.campaign_id)
+    .eq('item_type', key.item_type)
+    .is('resolved_at', null);
+
+  query = key.step === null ? query.is('step', null) : query.eq('step', key.step);
+  query = key.variant === null ? query.is('variant', null) : query.eq('variant', key.variant);
+
+  const { data: match, error: fetchErr } = await query.maybeSingle();
+  if (fetchErr) {
+    console.error(`[supabase] resolveDashboardItem fetch failed: ${fetchErr.message}`);
+    return false;
+  }
+  if (!match) return false;
+
+  const now = new Date().toISOString();
+  const { error: updateErr } = await sb
+    .from('cc_dashboard_items')
+    .update({
+      resolved_at: now,
+      worker_version: WORKER_VERSION,
+    })
+    .eq('id', match.id);
+  if (updateErr) {
+    console.error(`[supabase] resolveDashboardItem update failed: ${updateErr.message}`);
+    return false;
+  }
+
+  const { error: logErr } = await sb
+    .from('cc_resolution_log')
+    .insert({
+      item_type: key.item_type,
+      cm: match.cm,
+      campaign_id: key.campaign_id,
+      campaign_name: match.campaign_name,
+      workspace_id: match.workspace_id,
+      step: key.step,
+      variant: key.variant,
+      created_at: match.created_at,
+      resolved_at: now,
+      resolution_method: key.resolution_method,
+      worker_version: WORKER_VERSION,
+    });
+  if (logErr) console.error(`[supabase] cc_resolution_log insert failed: ${logErr.message}`);
+
+  return true;
+}
+
 // Item types that represent permanent actions (kills, freezes). These should
 // never be auto-resolved because subsequent runs won't re-detect them — the
 // variant is already disabled in Instantly. Only explicit CM action (dismiss
