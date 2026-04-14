@@ -18,7 +18,7 @@ import {
   getSupabaseClient, writeAuditLogToSupabase, writeLeadsAuditToSupabase,
   writeRunSummaryToSupabase, updateRunSummaryInSupabase,
   writeDailySnapshotToSupabase, writeNotificationToSupabase,
-  getDashboardDigestData,
+  getDashboardDigestData, resolveDashboardItem,
 } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -563,6 +563,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
 
     // Dashboard state: collect BLOCKED, dry-run kills, warnings, and leads issues for Phase 5
     const dashboardBlocked: AuditEntry[] = [];
+    const dashboardDisabledKills: AuditEntry[] = [];
     const dashboardDryRunKills: AuditEntry[] = [];
     const dashboardApproaching: WarningDetail[] = [];
     const dashboardLeadsExhausted: LeadsAuditEntry[] = [];
@@ -684,6 +685,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               cmName: null,
               kills: 0,
               blocked: [],
+              confirmedKills: [],
               dryRunKills: [],
               warnings: 0,
               warningDetails: [],
@@ -956,6 +958,49 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       const unfreezeReason = hasRehabilitatedVariant
                         ? 'variant recovered'
                         : `CM added variants (was ${frozen.variantCount}, now ${stepDetail.variants.length})`;
+                      if (sb) {
+                        await resolveDashboardItem(sb, {
+                          campaign_id: campaign.id,
+                          item_type: 'STEP_FROZEN',
+                          step: stepIndex + 1,
+                          variant: null,
+                          resolution_method: 'auto_rehab',
+                          reason: `Auto-resolved: Step unfrozen - ${unfreezeReason}`,
+                        });
+                      }
+                      const stepSent = stepAnalytics.reduce((sum, row) => sum + row.sent, 0);
+                      const stepOpps = stepAnalytics.reduce((sum, row) => sum + row.opportunities, 0);
+                      const unfreezeAudit: AuditEntry = {
+                        timestamp: new Date().toISOString(),
+                        action: 'STEP_UNFROZEN',
+                        workspace: workspace.name,
+                        workspaceId: workspace.id,
+                        campaign: campaign.name,
+                        campaignId: campaign.id,
+                        step: stepIndex + 1,
+                        variant: -1,
+                        variantLabel: 'ALL',
+                        cm: cmName,
+                        product: wsConfig.product,
+                        trigger: {
+                          sent: stepSent,
+                          opportunities: stepOpps,
+                          ratio: stepOpps === 0 ? 'Infinity' : (stepSent / stepOpps).toFixed(1),
+                          threshold: stepThreshold,
+                          rule: `Step unfrozen - ${unfreezeReason}`,
+                        },
+                        safety: {
+                          survivingVariants: stepDetail.variants.filter((v) => !v.v_disabled).length,
+                          notification: null,
+                        },
+                        dryRun: isDryRun,
+                      };
+                      await writeAuditLog(env.KV, unfreezeAudit).catch((err) =>
+                        console.error(`[auto-turnoff] Failed to write STEP_UNFROZEN audit log: ${err}`),
+                      );
+                      if (sb) await writeAuditLogToSupabase(sb, unfreezeAudit).catch((err) =>
+                        console.error(`[supabase] STEP_UNFROZEN audit write failed: ${err}`),
+                      );
                       console.log(
                         `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" unfrozen — ${unfreezeReason}`,
                       );
@@ -1711,7 +1756,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         );
 
                         // Feed confirmed kills into dashboard state (DISABLED items)
-                        result.dryRunKills.push(pk.auditEntry);
+                        result.confirmedKills.push(pk.auditEntry);
 
                         const rescanEntry: RescanEntry = {
                           workspaceId: workspace.id,
@@ -1794,6 +1839,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             workspaceErrors += r.errors;
             totalErrors += r.errors;
             dashboardBlocked.push(...r.blocked);
+            dashboardDisabledKills.push(...r.confirmedKills);
             dashboardDryRunKills.push(...r.dryRunKills);
             dashboardApproaching.push(...r.warningDetails);
             dashboardWinners.push(...r.winners);
@@ -2868,6 +2914,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             dashboardBlocked,
             dashboardLeadsExhausted,
             dashboardLeadsWarnings,
+            dashboardDisabledKills,
             dashboardDryRunKills,
             dashboardWinners,
             dashboardApproaching,
