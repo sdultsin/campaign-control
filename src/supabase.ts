@@ -367,6 +367,60 @@ export async function resolveStaleItems(
   return resolved;
 }
 
+export async function resolveCampaignDashboardItems(
+  sb: SupabaseClient,
+  campaignId: string,
+  resolutionScanId: string,
+  resolutionMethod: string,
+): Promise<number> {
+  const { data: activeItems, error: fetchErr } = await sb
+    .from('cc_dashboard_items')
+    .select('id, item_type, cm, campaign_id, campaign_name, workspace_id, workspace_name, step, variant, created_at')
+    .eq('campaign_id', campaignId)
+    .is('resolved_at', null);
+
+  if (fetchErr || !activeItems) {
+    console.error(`[supabase] cc_dashboard_items fetch for campaign resolve failed: ${fetchErr?.message}`);
+    return 0;
+  }
+
+  let resolved = 0;
+  for (const item of activeItems) {
+    const now = new Date().toISOString();
+    const { error: updateErr } = await sb
+      .from('cc_dashboard_items')
+      .update({ resolved_at: now, worker_version: WORKER_VERSION })
+      .eq('id', item.id);
+    if (updateErr) {
+      console.error(`[supabase] cc_dashboard_items campaign resolve failed: ${updateErr.message}`);
+      continue;
+    }
+
+    const { error: logErr } = await sb
+      .from('cc_resolution_log')
+      .insert({
+        item_type: item.item_type,
+        cm: item.cm,
+        campaign_id: item.campaign_id,
+        campaign_name: item.campaign_name,
+        workspace_id: item.workspace_id,
+        workspace_name: item.workspace_name,
+        step: item.step,
+        variant: item.variant,
+        created_at: item.created_at,
+        resolved_at: now,
+        resolution_scan_id: resolutionScanId,
+        worker_version: WORKER_VERSION,
+        resolution_method: resolutionMethod,
+      });
+    if (logErr) console.error(`[supabase] cc_resolution_log insert failed: ${logErr.message}`);
+
+    resolved++;
+  }
+
+  return resolved;
+}
+
 export async function getDashboardDigestData(
   sb: SupabaseClient,
   cm: string,

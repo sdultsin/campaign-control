@@ -18,7 +18,7 @@ import {
   getSupabaseClient, writeAuditLogToSupabase, writeLeadsAuditToSupabase,
   writeRunSummaryToSupabase, updateRunSummaryInSupabase,
   writeDailySnapshotToSupabase, writeNotificationToSupabase,
-  getDashboardDigestData,
+  getDashboardDigestData, resolveCampaignDashboardItems,
 } from './supabase';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -713,18 +713,36 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             // Skip OLD (retired/archived) campaigns — CMs prefix with "OLD" to mark inactive
             if (isOldCampaign(campaign.name)) return result;
 
-            // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD lifetime contacted
-            // are curated warm lists (no-shows, opps, form-sent), not cold outreach.
-            // Cold-outreach KPIs don't apply — skip entirely.
-            // Uses contacted (lifetime accumulator, never resets) instead of leads_count
-            // (current queued leads, typically 0 for most campaigns).
+            // Warm leads filter: campaigns with < WARM_LEADS_THRESHOLD current leads
+            // on the rollup row are curated lists, not cold outreach. Cold-outreach
+            // KPIs do not apply, so these campaigns fall out of CC surveillance.
             const wsBatch = leadsBatchByWorkspace.get(workspace.id);
             if (wsBatch) {
               const campAnalytics = wsBatch.get(campaign.id);
-              const contactedCount = campAnalytics?.leads_contacted ?? 0;
-              if (campAnalytics && isWarmLeadsCampaign(contactedCount)) {
+              const totalLeads = campAnalytics?.total_leads ?? null;
+
+              if (campAnalytics && totalLeads === null) {
+                console.warn(
+                  `[auto-turnoff] Warm leads gate: "${campaign.name}" has null rollup total_leads - continuing evaluation`,
+                );
+              }
+
+              if (campAnalytics && totalLeads !== null && isWarmLeadsCampaign(totalLeads)) {
+                if (sb) {
+                  const resolvedItems = await resolveCampaignDashboardItems(
+                    sb,
+                    campaign.id,
+                    runTimestamp,
+                    'excluded_warm_leads',
+                  );
+                  if (resolvedItems > 0) {
+                    console.log(
+                      `[auto-turnoff] Warm leads cleanup: resolved ${resolvedItems} dashboard item(s) for "${campaign.name}"`,
+                    );
+                  }
+                }
                 console.log(
-                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${contactedCount} contacted < ${WARM_LEADS_THRESHOLD} threshold)`,
+                  `[auto-turnoff] Warm leads skip: "${campaign.name}" (${totalLeads} current leads < ${WARM_LEADS_THRESHOLD} threshold)`,
                 );
                 totalWarmLeadsSkipped++;
                 return result;

@@ -20,11 +20,11 @@ describe('isOldCampaign', () => {
 });
 
 describe('isWarmLeadsCampaign', () => {
-  it('excludes campaign with < 5000 contacted', () => {
+  it('excludes campaign with < 5000 current leads', () => {
     expect(isWarmLeadsCampaign(500)).toBe(true);
   });
 
-  it('passes campaign with >= 5000 contacted', () => {
+  it('passes campaign with >= 5000 current leads', () => {
     expect(isWarmLeadsCampaign(5000)).toBe(false);
   });
 });
