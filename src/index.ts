@@ -677,14 +677,13 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             }
           }
 
-          // Finished campaigns can fall out of activeCampaigns before their
-          // old dashboard items are cleaned up. Resolve those explicitly when
-          // the current rollup total_leads says they are out of warm-leads scope.
+          // Resolve existing dashboard items for any campaign whose current
+          // rollup total_leads puts it out of warm-leads scope. This covers
+          // finished campaigns that fell out of activeCampaigns and OLD/OFF
+          // campaigns that short-circuit before the in-loop warm gate.
           const wsBatch = leadsBatchByWorkspace.get(workspace.id);
           if (sb && wsBatch) {
-            const activeCampaignIds = new Set(activeCampaigns.map((campaign) => campaign.id));
             for (const [campaignId, campaignMeta] of wsBatch) {
-              if (activeCampaignIds.has(campaignId)) continue;
               const totalLeads = campaignMeta.total_leads;
               if (totalLeads === null || !isWarmLeadsCampaign(totalLeads)) continue;
 
@@ -696,7 +695,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               );
               if (resolvedItems > 0) {
                 console.log(
-                  `[auto-turnoff] Warm leads cleanup: resolved ${resolvedItems} dashboard item(s) for inactive campaign ${campaignId}`,
+                  `[auto-turnoff] Warm leads cleanup: resolved ${resolvedItems} dashboard item(s) for campaign ${campaignId}`,
                 );
               }
             }
