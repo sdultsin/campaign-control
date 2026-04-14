@@ -136,7 +136,6 @@ describe('resolveDashboardItem', () => {
       step: 2,
       variant: null,
       resolution_method: 'auto_rehab',
-      reason: 'Auto-resolved: Step unfrozen - variant recovered',
     });
 
     expect(resolved).toBe(true);
@@ -178,7 +177,6 @@ describe('resolveDashboardItem', () => {
       step: 2,
       variant: null,
       resolution_method: 'auto_rehab',
-      reason: 'Auto-resolved: Step unfrozen - variant recovered',
     })).toBe(true);
 
     expect(await resolveDashboardItem(sb, {
@@ -187,7 +185,6 @@ describe('resolveDashboardItem', () => {
       step: 2,
       variant: null,
       resolution_method: 'auto_rehab',
-      reason: 'Auto-resolved: Step unfrozen - variant recovered',
     })).toBe(false);
 
     expect(tables.cc_resolution_log).toHaveLength(1);

@@ -303,7 +303,6 @@ export async function resolveDashboardItem(
     step: number | null;
     variant: number | null;
     resolution_method: string;
-    reason: string;
   },
 ): Promise<boolean> {
   let query = sb

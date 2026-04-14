@@ -953,7 +953,11 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                         });
                         continue;
                       }
-                      // Unfreeze — CM added variants or a previously-killed variant recovered
+                      // Unfreeze — CM added variants or a previously-killed variant recovered.
+                      // Runs unconditionally (not dry-run-gated) to keep KV + Supabase in sync:
+                      // once the KV freeze key is gone, subsequent runs skip the freeze-check
+                      // path entirely, so a lingering STEP_FROZEN dashboard row would never be
+                      // re-detected and would get stuck (the exact bug this branch fixes).
                       await env.KV.delete(freezeKey);
                       const unfreezeReason = hasRehabilitatedVariant
                         ? 'variant recovered'
@@ -965,7 +969,6 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                           step: stepIndex + 1,
                           variant: null,
                           resolution_method: 'auto_rehab',
-                          reason: `Auto-resolved: Step unfrozen - ${unfreezeReason}`,
                         });
                       }
                       const stepSent = stepAnalytics.reduce((sum, row) => sum + row.sent, 0);
