@@ -423,7 +423,8 @@ export interface CampaignResult {
   /** Frozen steps (uniform underperformance detected — all variants equally bad) */
   frozenSteps: Array<{
     stepIndex: number;
-    variantCount: number;
+    totalVariantCount: number;
+    evaluatedVariantCount: number;
     reenabledVariants: number[];
     avgReplyRate: number;
     totalSent: number;

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AuditEntry, LeadsAuditEntry, DashboardItemType, DashboardSeverity, WinnerEntry, WarningDetail } from './types';
-import { upsertDashboardItem, resolveStaleItems } from './supabase';
+import { upsertDashboardItem, resolveDashboardItem, resolveStaleItems } from './supabase';
 import { PILOT_CMS } from './config';
 
 interface DetectedIssue {
@@ -41,9 +41,11 @@ export async function buildDashboardState(
   approaching: WarningDetail[] = [],
   frozenSteps: Array<{
     campaignId: string; campaignName: string; workspaceId: string; workspaceName: string;
-    stepIndex: number; cm: string | null; frozenAt: string; variantCount: number;
+    stepIndex: number; cm: string | null; frozenAt: string; totalVariantCount: number;
+    evaluatedVariantCount: number;
     reenabledVariants: number[]; reason: string;
   }> = [],
+  scannedSteps: Array<{ campaignId: string; stepIndex: number }> = [],
 ): Promise<{ upserted: number; resolved: number }> {
   // Collect all detected issues, keyed by CM
   const issuesByCm = new Map<string, DetectedIssue[]>();
@@ -247,7 +249,8 @@ export async function buildDashboardState(
       variant_label: null,
       context: {
         frozen_at: entry.frozenAt,
-        variant_count: entry.variantCount,
+        variant_count: entry.totalVariantCount,
+        evaluated_variant_count: entry.evaluatedVariantCount,
         reenabled_variants: entry.reenabledVariants,
         reason: entry.reason,
       },
@@ -263,9 +266,29 @@ export async function buildDashboardState(
     }
   }
 
+  const activeFrozenStepKeys = new Set(
+    frozenSteps.map((entry) => `${entry.campaignId}:${entry.stepIndex}`),
+  );
+  let totalResolved = 0;
+  const seenScannedSteps = new Set<string>();
+  for (const step of scannedSteps) {
+    const key = `${step.campaignId}:${step.stepIndex}`;
+    if (seenScannedSteps.has(key)) continue;
+    seenScannedSteps.add(key);
+    if (activeFrozenStepKeys.has(key)) continue;
+
+    const resolved = await resolveDashboardItem(sb, {
+      campaign_id: step.campaignId,
+      item_type: 'STEP_FROZEN',
+      step: step.stepIndex + 1,
+      variant: null,
+      resolution_method: 'auto_scan_clear',
+    });
+    if (resolved) totalResolved++;
+  }
+
   // Resolve items that are no longer detected
   // Only resolve for CMs that were actually scanned in this run (pilot CMs)
-  let totalResolved = 0;
   for (const cm of PILOT_CMS) {
     const activeKeys = activeKeysByCm.get(cm) ?? new Set();
     const resolved = await resolveStaleItems(sb, cm, activeKeys, scanTimestamp);

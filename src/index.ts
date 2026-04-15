@@ -570,9 +570,11 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
     const dashboardLeadsWarnings: LeadsAuditEntry[] = [];
     const dashboardFrozenSteps: Array<{
       campaignId: string; campaignName: string; workspaceId: string; workspaceName: string;
-      stepIndex: number; cm: string | null; frozenAt: string; variantCount: number;
+      stepIndex: number; cm: string | null; frozenAt: string; totalVariantCount: number;
+      evaluatedVariantCount: number;
       reenabledVariants: number[]; reason: string;
     }> = [];
+    const dashboardScannedSteps: Array<{ campaignId: string; stepIndex: number }> = [];
 
     // Freeze counters
     let totalStepsFrozen = 0;
@@ -903,6 +905,11 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                   continue;
                 }
 
+                dashboardScannedSteps.push({
+                  campaignId: campaign.id,
+                  stepIndex,
+                });
+
                 // Compute analytics + threshold before freeze check (needed for rehabilitation unfreeze)
                 const stepAnalytics = primaryAnalytics.filter(
                   (a) => parseInt(a.step, 10) === stepIndex,
@@ -926,14 +933,15 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       });
 
                       if (stepDetail.variants.length <= frozen.variantCount && !hasRehabilitatedVariant) {
-                        const displayCount = frozen.evaluatedCount ?? frozen.variantCount;
+                        const evaluatedCount = frozen.evaluatedCount ?? frozen.variantCount;
                         console.log(
-                          `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" is frozen (${displayCount} evaluated, ${frozen.variantCount} total, frozen at ${frozen.frozenAt}) — skipping`,
+                          `[auto-turnoff] Step ${stepIndex + 1} of "${campaign.name}" is frozen (${evaluatedCount} evaluated, ${frozen.variantCount} total, frozen at ${frozen.frozenAt}) — skipping`,
                         );
                         // Add to dashboard so STEP_FROZEN item persists
                         result.frozenSteps.push({
                           stepIndex,
-                          variantCount: displayCount,
+                          totalVariantCount: frozen.variantCount,
+                          evaluatedVariantCount: evaluatedCount,
                           reenabledVariants: [],
                           avgReplyRate: 0,
                           totalSent: 0,
@@ -947,7 +955,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                           stepIndex,
                           cm: cmName,
                           frozenAt: frozen.frozenAt,
-                          variantCount: displayCount,
+                          totalVariantCount: frozen.variantCount,
+                          evaluatedVariantCount: evaluatedCount,
                           reenabledVariants: [],
                           reason: 'uniform_underperformance',
                         });
@@ -1185,7 +1194,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     // 8. ADD FREEZE DATA TO CAMPAIGN RESULT + DASHBOARD
                     result.frozenSteps.push({
                       stepIndex,
-                      variantCount: activeNonSkipCount,
+                      totalVariantCount: stepDetail.variants.length,
+                      evaluatedVariantCount: activeNonSkipCount,
                       reenabledVariants: actualReenabled > 0 ? reenableList : [],
                       avgReplyRate,
                       totalSent,
@@ -1199,7 +1209,8 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       stepIndex,
                       cm: cmName,
                       frozenAt,
-                      variantCount: activeNonSkipCount,
+                      totalVariantCount: stepDetail.variants.length,
+                      evaluatedVariantCount: activeNonSkipCount,
                       reenabledVariants: actualReenabled > 0 ? reenableList : [],
                       reason: 'uniform_underperformance',
                     });
@@ -2922,6 +2933,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             dashboardWinners,
             dashboardApproaching,
             dashboardFrozenSteps,
+            dashboardScannedSteps,
           );
           console.log(`[auto-turnoff] Dashboard state: ${dashResult.upserted} upserted, ${dashResult.resolved} resolved`);
         } catch (dashErr) {
