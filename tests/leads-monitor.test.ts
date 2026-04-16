@@ -2,19 +2,31 @@ import { describe, it, expect } from 'vitest';
 import { evaluateLeadDepletion } from '../src/leads-monitor';
 
 describe('evaluateLeadDepletion', () => {
-  it('returns EXHAUSTED when 0 leads remaining', () => {
-    const result = evaluateLeadDepletion(0, 10000);
-    expect(result.status).toBe('EXHAUSTED');
+  it('returns SKIPPED when totalLeads is 0', () => {
+    expect(evaluateLeadDepletion(0, 0).status).toBe('SKIPPED');
   });
 
-  it('returns WARNING when leads below warning threshold', () => {
-    // LEADS_WARNING_THRESHOLD = 5000, so 3000 < 5000 -> WARNING
-    const result = evaluateLeadDepletion(3000, 50000);
-    expect(result.status).toBe('WARNING');
+  it('returns EXHAUSTED when uncontacted equals 100 (inclusive floor)', () => {
+    expect(evaluateLeadDepletion(100, 50000).status).toBe('EXHAUSTED');
   });
 
-  it('returns HEALTHY when leads above warning threshold', () => {
-    const result = evaluateLeadDepletion(10000, 50000);
-    expect(result.status).toBe('HEALTHY');
+  it('returns EXHAUSTED when uncontacted is below 100', () => {
+    expect(evaluateLeadDepletion(50, 50000).status).toBe('EXHAUSTED');
+  });
+
+  it('returns WARNING when uncontacted is 101 (just above EXHAUSTED)', () => {
+    expect(evaluateLeadDepletion(101, 50000).status).toBe('WARNING');
+  });
+
+  it('returns WARNING when uncontacted is just below 10000', () => {
+    expect(evaluateLeadDepletion(9999, 50000).status).toBe('WARNING');
+  });
+
+  it('returns HEALTHY when uncontacted equals 10000 (warning threshold is strict <)', () => {
+    expect(evaluateLeadDepletion(10000, 50000).status).toBe('HEALTHY');
+  });
+
+  it('returns HEALTHY when uncontacted is well above warning threshold', () => {
+    expect(evaluateLeadDepletion(20000, 50000).status).toBe('HEALTHY');
   });
 });

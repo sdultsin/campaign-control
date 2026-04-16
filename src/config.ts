@@ -168,14 +168,25 @@ export const LEADS_WARNING_DEDUP_TTL_SECONDS = 172800;   // 48 hours
 export const LEADS_EXHAUSTED_DEDUP_TTL_SECONDS = 172800;  // 48 hours
 
 // Leads depletion monitor: absolute thresholds (replaces dailyLimit-based logic)
-export const LEADS_EXHAUSTED_THRESHOLD = 0;
-export const LEADS_WARNING_THRESHOLD = 5000;
+export const LEADS_EXHAUSTED_THRESHOLD = 100;
+export const LEADS_WARNING_THRESHOLD = 10000;
 
-// TEMPORARY: leads monitor disabled while lead-data accuracy is being rebuilt.
-// When false, Phase 3 (leads depletion check) is skipped entirely — no
-// LEADS_EXHAUSTED / LEADS_WARNING audit entries, no Slack pings, no dashboard
-// items. Set back to true once the lead pipeline is verified.
-export const LEADS_MONITOR_ENABLED = false;
+// Leads monitor: master switch. When false, Phase 3 is skipped entirely.
+// Re-enabled 2026-04-16 after the lead_sequence_started column rename made
+// the data trustworthy. See handoffs/2026-04-16-lead-column-rename-execution.md.
+export const LEADS_MONITOR_ENABLED = true;
+
+// Leads monitor pilot: only these CMs generate LEADS_EXHAUSTED / LEADS_WARNING
+// notifications. Independent of PILOT_CMS (which gates kill/winner/warning
+// eval for the whole worker). Empty set = full fleet. Separate gate so we
+// can expand leads monitoring independently of the rest of CC.
+export const LEADS_MONITOR_PILOT_CMS: Set<string> = new Set(['LEO', 'ANDRES']);
+
+// Leads monitor Slack suppression. When true, LEADS_EXHAUSTED / LEADS_WARNING
+// do NOT fire per-CM Slack messages - dashboard items only. Audit + KV dedup
+// still write normally. Flip to false when expanding past the dashboard-only
+// pilot.
+export const LEADS_MONITOR_SLACK_ENABLED = false;
 
 /**
  * Campaigns with fewer than this many leads are "warm leads" campaigns.
@@ -205,4 +216,3 @@ export const SLACK_SUPPRESSED = true;
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
 export const CRON_HOURS_UTC = [10, 13, 14, 16, 18, 19, 21, 23]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.
-

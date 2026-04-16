@@ -34,6 +34,8 @@ import {
   LEADS_WARNING_DEDUP_TTL_SECONDS,
   LEADS_EXHAUSTED_DEDUP_TTL_SECONDS,
   LEADS_MONITOR_ENABLED,
+  LEADS_MONITOR_PILOT_CMS,
+  LEADS_MONITOR_SLACK_ENABLED,
   CM_MONITOR_CHANNELS,
   DASHBOARD_BASE_URL,
   SINGLE_OPP_RUNWAY_MULTIPLIER,
@@ -832,8 +834,13 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
               };
 
               // --- LEADS DEPLETION: collect candidate for Phase 3 ---
+              const leadsMonitorPilot =
+                LEADS_MONITOR_PILOT_CMS.size === 0 ||
+                (cmName !== null && LEADS_MONITOR_PILOT_CMS.has(cmName));
               const dailyLimit = meta.daily_limit;
-              if (dailyLimit && dailyLimit > 0) {
+              if (!leadsMonitorPilot) {
+                // skipped silently - most campaigns are outside the pilot
+              } else if (dailyLimit && dailyLimit > 0) {
                 result.leadsCandidate = {
                   workspaceId: workspace.id,
                   workspaceName: workspace.name,
@@ -2540,20 +2547,22 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                 console.error(`[supabase] leads_exhausted audit write failed: ${err}`),
               );
 
-              // Collect Slack notification
-              collector.add(candidate.channelId, 'LEADS_EXHAUSTED', formatLeadsExhaustedDetails(candidate, totalLeads, active), {
-                timestamp: new Date().toISOString(),
-                notification_type: 'LEADS_EXHAUSTED',
-                campaign_id: candidate.campaignId,
-                campaign_name: candidate.campaignName,
-                workspace_id: candidate.workspaceId,
-                workspace_name: candidate.workspaceName,
-                cm: candidate.cmName,
-                step: null,
-                variant: null,
-                variant_label: null,
-                dry_run: isDryRun,
-              });
+              // Collect Slack notification (gated for pilot)
+              if (LEADS_MONITOR_SLACK_ENABLED) {
+                collector.add(candidate.channelId, 'LEADS_EXHAUSTED', formatLeadsExhaustedDetails(candidate, totalLeads, active), {
+                  timestamp: new Date().toISOString(),
+                  notification_type: 'LEADS_EXHAUSTED',
+                  campaign_id: candidate.campaignId,
+                  campaign_name: candidate.campaignName,
+                  workspace_id: candidate.workspaceId,
+                  workspace_name: candidate.workspaceName,
+                  cm: candidate.cmName,
+                  step: null,
+                  variant: null,
+                  variant_label: null,
+                  dry_run: isDryRun,
+                });
+              }
 
               // Clear any existing warning dedup (escalated to exhausted)
               await env.KV.delete(`leads-warning:${candidate.campaignId}`).catch(() => {});
@@ -2642,20 +2651,22 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                 console.error(`[supabase] leads_warning audit write failed: ${err}`),
               );
 
-              // Collect Slack notification
-              collector.add(candidate.channelId, 'LEADS_WARNING', formatLeadsWarningDetails(candidate, uncontacted, totalLeads), {
-                timestamp: new Date().toISOString(),
-                notification_type: 'LEADS_WARNING',
-                campaign_id: candidate.campaignId,
-                campaign_name: candidate.campaignName,
-                workspace_id: candidate.workspaceId,
-                workspace_name: candidate.workspaceName,
-                cm: candidate.cmName,
-                step: null,
-                variant: null,
-                variant_label: null,
-                dry_run: isDryRun,
-              });
+              // Collect Slack notification (gated for pilot)
+              if (LEADS_MONITOR_SLACK_ENABLED) {
+                collector.add(candidate.channelId, 'LEADS_WARNING', formatLeadsWarningDetails(candidate, uncontacted, totalLeads), {
+                  timestamp: new Date().toISOString(),
+                  notification_type: 'LEADS_WARNING',
+                  campaign_id: candidate.campaignId,
+                  campaign_name: candidate.campaignName,
+                  workspace_id: candidate.workspaceId,
+                  workspace_name: candidate.workspaceName,
+                  cm: candidate.cmName,
+                  step: null,
+                  variant: null,
+                  variant_label: null,
+                  dry_run: isDryRun,
+                });
+              }
 
             } else {
               // HEALTHY: clear any existing dedup keys (state recovered)

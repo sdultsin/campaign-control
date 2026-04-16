@@ -6,9 +6,12 @@ import { LEADS_EXHAUSTED_THRESHOLD, LEADS_WARNING_THRESHOLD } from './config';
  *
  * Returns:
  * - SKIPPED if totalLeads <= 0
- * - EXHAUSTED if uncontacted <= LEADS_EXHAUSTED_THRESHOLD (0)
- * - WARNING if uncontacted < LEADS_WARNING_THRESHOLD (5000)
+ * - EXHAUSTED if uncontacted <= LEADS_EXHAUSTED_THRESHOLD (100)
+ * - WARNING if uncontacted < LEADS_WARNING_THRESHOLD (10000)
  * - HEALTHY otherwise
+ *
+ * Canonical `uncontacted` = `total_leads - lead_sequence_started`,
+ * per the 2026-04-16 column rename. Do NOT substitute analytics_sequence_started.
  */
 export function evaluateLeadDepletion(
   uncontacted: number,
