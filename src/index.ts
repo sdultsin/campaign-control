@@ -725,7 +725,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             const wsBatch = leadsBatchByWorkspace.get(workspace.id);
             if (wsBatch) {
               const campAnalytics = wsBatch.get(campaign.id);
-              const contactedCount = campAnalytics?.leads_contacted ?? 0;
+              const contactedCount = campAnalytics?.lead_sequence_started ?? 0;
               if (campAnalytics && isWarmLeadsCampaign(contactedCount)) {
                 console.log(
                   `[auto-turnoff] Warm leads skip: "${campaign.name}" (${contactedCount} contacted < ${WARM_LEADS_THRESHOLD} threshold)`,
@@ -2430,8 +2430,9 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             let uncontacted: number;
 
             // Use Pipeline Supabase batch data for lead counts.
-            // leads_contacted is the canonical "leads sent at least one email" field.
-            // active = total - contacted (uncontacted leads remaining).
+            // lead_sequence_started is the canonical "leads that have entered the sequence" field
+            // (leads-tab count from /leads/list FILTER_VAL_CONTACTED, NOT the analytics-tab
+            // windowed counter). active = total - contacted (uncontacted leads remaining).
             const wsMap = leadsBatchByWorkspace.get(candidate.workspaceId);
             const batchData = wsMap?.get(candidate.campaignId);
             if (!batchData) {
@@ -2445,7 +2446,7 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
             bounced = batchData.leads_bounced ?? 0;
             unsubscribed = batchData.leads_unsubscribed ?? 0;
             skipped = 0;
-            contacted = batchData.leads_contacted ?? 0;
+            contacted = batchData.lead_sequence_started ?? 0;
             active = Math.max(0, totalLeads - contacted);   // uncontacted leads remaining
             uncontacted = active;
 

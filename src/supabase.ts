@@ -57,7 +57,7 @@ export async function writeLeadsAuditToSupabase(
     campaign_id: entry.campaignId,
     cm: entry.cm,
     leads_total: entry.leads.total,
-    leads_contacted: entry.leads.contacted,
+    lead_sequence_started: entry.leads.contacted,
     leads_active_in_sequence: entry.leads.active_in_sequence,
     leads_completed: entry.leads.completed,
     leads_active: entry.leads.active,

@@ -23,7 +23,7 @@ export interface PipelineCampaignMeta {
   infra_type: string | null;     // 'google' | 'outlook' | null
   contacted_count: number | null;
   total_leads: number | null;
-  leads_contacted: number | null;
+  lead_sequence_started: number | null;
   leads_completed: number | null;
   leads_bounced: number | null;
   leads_unsubscribed: number | null;
@@ -130,7 +130,7 @@ export async function getCampaignMeta(
   // Query 2: Get leads data from the __ALL__/__ALL__ rollup row
   const { data: rollupRows, error: rollupErr } = await sb
     .from('campaign_data')
-    .select('leads_contacted, total_leads, leads_completed, leads_bounced, leads_unsubscribed')
+    .select('lead_sequence_started, total_leads, leads_completed, leads_bounced, leads_unsubscribed')
     .eq('campaign_id', campaignId)
     .eq('step', '__ALL__')
     .eq('variant', '__ALL__')
@@ -146,9 +146,9 @@ export async function getCampaignMeta(
   return {
     daily_limit: (meta?.daily_limit as number | null) ?? null,
     infra_type: (meta?.infra_type as string | null) ?? null,
-    contacted_count: (rollup?.leads_contacted as number | null) ?? null,
+    contacted_count: (rollup?.lead_sequence_started as number | null) ?? null,
     total_leads: (rollup?.total_leads as number | null) ?? null,
-    leads_contacted: (rollup?.leads_contacted as number | null) ?? null,
+    lead_sequence_started: (rollup?.lead_sequence_started as number | null) ?? null,
     leads_completed: (rollup?.leads_completed as number | null) ?? null,
     leads_bounced: (rollup?.leads_bounced as number | null) ?? null,
     leads_unsubscribed: (rollup?.leads_unsubscribed as number | null) ?? null,
@@ -171,7 +171,7 @@ export async function getWorkspaceLeadsBatch(
 
   const { data, error } = await sb
     .from('campaign_data')
-    .select('campaign_id, total_leads, leads_contacted, leads_completed, leads_bounced, leads_unsubscribed, daily_limit, infra_type')
+    .select('campaign_id, total_leads, lead_sequence_started, leads_completed, leads_bounced, leads_unsubscribed, daily_limit, infra_type')
     .in('workspace_id', wsIds)
     .eq('step', '__ALL__')
     .eq('variant', '__ALL__');
@@ -186,9 +186,9 @@ export async function getWorkspaceLeadsBatch(
     result.set(row.campaign_id as string, {
       daily_limit: (row.daily_limit as number | null) ?? null,
       infra_type: (row.infra_type as string | null) ?? null,
-      contacted_count: (row.leads_contacted as number | null) ?? null,
+      contacted_count: (row.lead_sequence_started as number | null) ?? null,
       total_leads: (row.total_leads as number | null) ?? null,
-      leads_contacted: (row.leads_contacted as number | null) ?? null,
+      lead_sequence_started: (row.lead_sequence_started as number | null) ?? null,
       leads_completed: (row.leads_completed as number | null) ?? null,
       leads_bounced: (row.leads_bounced as number | null) ?? null,
       leads_unsubscribed: (row.leads_unsubscribed as number | null) ?? null,
