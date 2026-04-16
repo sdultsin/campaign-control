@@ -94,9 +94,7 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   { id: 'the-eagles', name: 'The Eagles', product: 'FUNDING', defaultCm: null },
   { id: 'renaissance-3', name: 'Renaissance 3', product: 'FUNDING', defaultCm: 'SAM' },
   { id: 'renaissance-6', name: 'Renaissance 6', product: 'FUNDING', defaultCm: 'SAM' },
-  // Excluded: Renaissance 7
-  // Warming up as of 2026-03-16 (confirmed by Samuel). No CMs assigned, 0 active campaigns.
-  // Re-add when it goes live.
+  { id: 'renaissance-7', name: 'Renaissance 7', product: 'FUNDING', defaultCm: null },
   // ERC
   { id: 'erc-1', name: 'ERC 1', product: 'ERC', defaultCm: null },
   { id: 'erc-2', name: 'ERC 2', product: 'ERC', defaultCm: null },
