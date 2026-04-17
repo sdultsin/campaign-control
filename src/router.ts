@@ -50,18 +50,16 @@ export function isExcludedFromWorkspace(workspaceId: string, cmName: string | nu
   return WORKSPACE_CM_EXCLUSIONS[workspaceId]?.has(cmName) ?? false;
 }
 
-export function resolveCmName(
-  workspaceConfig: WorkspaceConfig,
-  campaignName: string,
-): string | null {
-  // Dedicated workspace: owner is the defaultCm, period.
-  // No campaign name parsing -- avoids false matches on lead list
-  // labels, batch names, or other parenthetical metadata.
-  if (workspaceConfig.defaultCm) return workspaceConfig.defaultCm;
-
-  // Shared workspace: resolve CM from campaign name.
-  // Check parentheses first -- must match a known CM.
+/**
+ * Parse a known CM from a campaign name. Only matches names in CM_CHANNEL_MAP
+ * so foreign tokens like "(Ben's leads)" or "RG2848" are ignored.
+ * Returns the CM key (uppercased) or null if no known CM is found.
+ */
+function parseCmFromName(campaignName: string): string | null {
   const knownCms = Object.keys(CM_CHANNEL_MAP);
+
+  // Parentheses first. Reverse so the rightmost paren wins (it's the CM
+  // tag by convention; earlier parens are usually lead-list metadata).
   const parenMatches = [...campaignName.matchAll(/\(([^)]+)\)/g)].map((m) => m[1]);
   const filtered = parenMatches.filter((v) => v.trim().toLowerCase() !== 'copy');
   for (const match of filtered.reverse()) {
@@ -69,13 +67,32 @@ export function resolveCmName(
     if (knownCms.includes(candidate)) return candidate;
   }
 
-  // Fallback: suffix parsing (e.g. "Campaign Name - ALEX")
+  // Suffix fallback (e.g. "Campaign Name - ALEX").
   const nameUpper = campaignName.toUpperCase();
   for (const cm of knownCms) {
     if (nameUpper.includes(`- ${cm}`) || nameUpper.endsWith(` ${cm}`)) {
       return cm;
     }
   }
+
+  return null;
+}
+
+export function resolveCmName(
+  workspaceConfig: WorkspaceConfig,
+  campaignName: string,
+): string | null {
+  // Parse the name first, for both dedicated and shared workspaces. A CM
+  // tag in the campaign name (e.g. "... (MARCOS)") is an explicit
+  // attribution and must win over the workspace's defaultCm -- otherwise
+  // overflow campaigns hosted in another CM's dedicated workspace get
+  // misrouted to the workspace owner. The parser only matches names in
+  // CM_CHANNEL_MAP, so unrelated parentheticals don't trigger false hits.
+  const parsed = parseCmFromName(campaignName);
+  if (parsed) return parsed;
+
+  // No CM tag found. Dedicated workspace: fall back to the owner.
+  if (workspaceConfig.defaultCm) return workspaceConfig.defaultCm;
 
   console.warn(`[CC] Unresolved CM for campaign: ${campaignName} in shared workspace`);
   return null;
