@@ -1,4 +1,11 @@
-import { DEFAULT_THRESHOLD, PRODUCT_THRESHOLDS, OFF_CAMPAIGN_BUFFER, getWorkspaceConfig } from './config';
+import {
+  DEFAULT_THRESHOLD,
+  PRODUCT_THRESHOLDS,
+  PROVIDER_THRESHOLDS,
+  OFF_CAMPAIGN_BUFFER,
+  OUTLOOK_KPI_WORKSPACES,
+  getWorkspaceConfig,
+} from './config';
 import { infraTypeToThreshold } from './pipeline-data';
 
 /**
@@ -22,7 +29,11 @@ export async function resolveThreshold(
 
   let threshold: number;
   if (config.product === 'FUNDING') {
-    threshold = await getInfraThreshold(campaignId, infraType, kv);
+    if (OUTLOOK_KPI_WORKSPACES.has(workspaceId)) {
+      threshold = PROVIDER_THRESHOLDS[3]; // Force Outlook threshold regardless of infra_type
+    } else {
+      threshold = await getInfraThreshold(campaignId, infraType, kv);
+    }
   } else {
     threshold = PRODUCT_THRESHOLDS[config.product];
   }

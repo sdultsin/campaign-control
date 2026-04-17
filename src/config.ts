@@ -26,6 +26,16 @@ export const PROVIDER_THRESHOLDS: Record<number, number> = {
 };
 export const DEFAULT_THRESHOLD = 4000;
 
+/**
+ * Workspaces whose campaigns should always use the Outlook (5000) threshold,
+ * regardless of the infra_type value in Pipeline Supabase. Used when the
+ * workspace is known to run on Outlook infra but pipeline classification is
+ * unreliable.
+ */
+export const OUTLOOK_KPI_WORKSPACES = new Set<string>([
+  'automated-applications',
+]);
+
 export const PRODUCT_THRESHOLDS: Record<Product, number> = {
   FUNDING: 4000,   // overridden by per-infra at runtime
   ERC: 6000,
