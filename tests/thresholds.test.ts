@@ -25,7 +25,7 @@ describe('resolveThreshold', () => {
   });
 
   it('resolves ERC product to 6000 regardless of infra', async () => {
-    const threshold = await resolveThreshold('erc-1', 'c4', 'google', stubKv);
+    const threshold = await resolveThreshold('erc-2', 'c4', 'google', stubKv);
     expect(threshold).toBe(6000);
   });
 

@@ -34,6 +34,9 @@ export const DEFAULT_THRESHOLD = 4000;
  */
 export const OUTLOOK_KPI_WORKSPACES = new Set<string>([
   'automated-applications',
+  'renaissance-3',
+  'renaissance-6',
+  'erc-1',
 ]);
 
 export const PRODUCT_THRESHOLDS: Record<Product, number> = {
@@ -105,8 +108,9 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   { id: 'renaissance-3', name: 'Renaissance 3', product: 'FUNDING', defaultCm: 'SAM' },
   { id: 'renaissance-6', name: 'Renaissance 6', product: 'FUNDING', defaultCm: 'SAM' },
   { id: 'renaissance-7', name: 'Renaissance 7', product: 'FUNDING', defaultCm: null },
+  // Tariffs + Funding (legacy slug erc-1, renamed in Instantly UI 2026-04-15)
+  { id: 'erc-1', name: 'Tariffs + Funding', product: 'FUNDING', defaultCm: 'SAM' },
   // ERC
-  { id: 'erc-1', name: 'ERC 1', product: 'ERC', defaultCm: null },
   { id: 'erc-2', name: 'ERC 2', product: 'ERC', defaultCm: null },
   // S125
   { id: 'section-125-1', name: 'Section 125 1', product: 'S125', defaultCm: 'IDO' },
