@@ -157,7 +157,7 @@ export const LAST_VARIANT_WARNING_PCT = 0.7;
 export const WARNING_DEDUP_TTL_SECONDS = 86400;
 export const KILL_DEDUP_TTL_SECONDS = 604800; // 7 days (same as blocked)
 // Secondary rescan: how long to wait before rechecking disabled variants
-export const RESCAN_DELAY_HOURS = 4;
+export const RESCAN_DELAY_HOURS = 1;
 // TTL for rescan queue entries in KV (auto-cleanup after 48 hours)
 export const RESCAN_TTL_SECONDS = 172800;
 // Maximum window for redemption (explicit expiration check in code)
