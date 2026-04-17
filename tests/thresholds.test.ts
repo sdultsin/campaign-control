@@ -24,9 +24,9 @@ describe('resolveThreshold', () => {
     expect(threshold).toBe(4000);
   });
 
-  it('resolves ERC product to 6000 regardless of infra', async () => {
-    const threshold = await resolveThreshold('erc-2', 'c4', 'google', stubKv);
-    expect(threshold).toBe(6000);
+  it('resolves S125 product to 14000 regardless of infra', async () => {
+    const threshold = await resolveThreshold('section-125-1', 'c4', 'google', stubKv);
+    expect(threshold).toBe(14000);
   });
 
   it('applies OFF buffer (1.2x) for OFF campaigns', async () => {
