@@ -455,7 +455,7 @@ export async function resolveInactiveCampaignItems(
 
   const { data: statusRows, error: statusErr } = await sb
     .from('campaign_data')
-    .select('campaign_id, status')
+    .select('campaign_id, status, step, variant')
     .in('campaign_id', campaignIds);
 
   if (statusErr) {
@@ -463,14 +463,32 @@ export async function resolveInactiveCampaignItems(
     return 0;
   }
 
-  // A campaign is active iff ANY of its rows has status in ('1', 'Active').
-  // Mixed-row edge cases err on the side of NOT resolving.
-  const activeByCampaign = new Map<string, boolean>();
+  // Prefer the __ALL__/__ALL__ sentinel row as the authoritative per-campaign
+  // status — it matches Instantly's list-view state. Fall back to "any row
+  // active" only when no __ALL__ row is present. This handles Pipeline sync
+  // staleness where child step/variant rows lag behind the campaign-level state.
+  const allRowStatus = new Map<string, string>();
+  const anyActive = new Map<string, boolean>();
   for (const row of statusRows ?? []) {
     const cid = row.campaign_id as string;
-    const isActive = row.status === '1' || row.status === 'Active';
-    if (isActive) activeByCampaign.set(cid, true);
-    else if (!activeByCampaign.has(cid)) activeByCampaign.set(cid, false);
+    const status = row.status as string;
+    const isActive = status === '1' || status === 'Active';
+    if (row.step === '__ALL__' && row.variant === '__ALL__') {
+      allRowStatus.set(cid, status);
+    }
+    if (isActive) anyActive.set(cid, true);
+    else if (!anyActive.has(cid)) anyActive.set(cid, false);
+  }
+
+  const activeByCampaign = new Map<string, boolean>();
+  for (const cid of campaignIds) {
+    const allStatus = allRowStatus.get(cid);
+    if (allStatus !== undefined) {
+      activeByCampaign.set(cid, allStatus === '1' || allStatus === 'Active');
+    } else if (anyActive.has(cid)) {
+      activeByCampaign.set(cid, anyActive.get(cid)!);
+    }
+    // else: leave unset → treated as ghost (inactive) below
   }
 
   const now = new Date().toISOString();
