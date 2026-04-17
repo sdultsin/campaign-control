@@ -111,7 +111,7 @@ export const WORKSPACE_CONFIGS: WorkspaceConfig[] = [
   // Tariffs + Funding (legacy slug erc-1, renamed in Instantly UI 2026-04-15)
   { id: 'erc-1', name: 'Tariffs + Funding', product: 'FUNDING', defaultCm: 'SAM' },
   // ERC
-  { id: 'erc-2', name: 'ERC 2', product: 'ERC', defaultCm: null },
+  { id: 'erc-2', name: 'ERC 2', product: 'ERC', defaultCm: 'ANDRES' },
   // S125
   { id: 'section-125-1', name: 'Section 125 1', product: 'S125', defaultCm: 'IDO' },
   { id: 'section-125-2', name: 'Section 125 2', product: 'S125', defaultCm: null },
