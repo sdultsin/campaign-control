@@ -430,6 +430,89 @@ export async function resolveStaleItems(
   return resolved;
 }
 
+/**
+ * Resolve all open dashboard items for campaigns that are no longer active
+ * in Pipeline Supabase (status NOT IN ('1', 'Active')) or no longer present
+ * at all (ghost). Includes permanent item types (DISABLED, STEP_FROZEN,
+ * SEND_VOLUME_ANOMALY) — they're only "permanent" during normal eval;
+ * once the campaign is inactive, they should clear.
+ */
+export async function resolveInactiveCampaignItems(
+  sb: SupabaseClient,
+  scanTimestamp: string,
+): Promise<number> {
+  const { data: openItems, error: fetchErr } = await sb
+    .from('cc_dashboard_items')
+    .select('id, item_type, cm, campaign_id, campaign_name, workspace_id, step, variant, created_at')
+    .is('resolved_at', null);
+
+  if (fetchErr || !openItems || openItems.length === 0) {
+    if (fetchErr) console.error(`[supabase] resolveInactiveCampaignItems fetch failed: ${fetchErr.message}`);
+    return 0;
+  }
+
+  const campaignIds = Array.from(new Set(openItems.map((i) => i.campaign_id as string)));
+
+  const { data: statusRows, error: statusErr } = await sb
+    .from('campaign_data')
+    .select('campaign_id, status')
+    .in('campaign_id', campaignIds);
+
+  if (statusErr) {
+    console.error(`[supabase] resolveInactiveCampaignItems status query failed: ${statusErr.message}`);
+    return 0;
+  }
+
+  // A campaign is active iff ANY of its rows has status in ('1', 'Active').
+  // Mixed-row edge cases err on the side of NOT resolving.
+  const activeByCampaign = new Map<string, boolean>();
+  for (const row of statusRows ?? []) {
+    const cid = row.campaign_id as string;
+    const isActive = row.status === '1' || row.status === 'Active';
+    if (isActive) activeByCampaign.set(cid, true);
+    else if (!activeByCampaign.has(cid)) activeByCampaign.set(cid, false);
+  }
+
+  const now = new Date().toISOString();
+  let resolved = 0;
+  for (const item of openItems) {
+    const cid = item.campaign_id as string;
+    const isActive = activeByCampaign.get(cid); // undefined = ghost
+    if (isActive === true) continue;
+
+    const { error: updateErr } = await sb
+      .from('cc_dashboard_items')
+      .update({ resolved_at: now, worker_version: WORKER_VERSION })
+      .eq('id', item.id);
+    if (updateErr) {
+      console.error(`[supabase] resolveInactiveCampaignItems resolve failed: ${updateErr.message}`);
+      continue;
+    }
+
+    const { error: logErr } = await sb
+      .from('cc_resolution_log')
+      .insert({
+        item_type: item.item_type,
+        cm: item.cm,
+        campaign_id: cid,
+        campaign_name: item.campaign_name,
+        workspace_id: item.workspace_id,
+        step: item.step,
+        variant: item.variant,
+        created_at: item.created_at,
+        resolved_at: now,
+        resolution_scan_id: scanTimestamp,
+        worker_version: WORKER_VERSION,
+        resolution_method: 'campaign_inactive',
+      });
+    if (logErr) console.error(`[supabase] cc_resolution_log insert failed: ${logErr.message}`);
+
+    resolved++;
+  }
+
+  return resolved;
+}
+
 export async function getDashboardDigestData(
   sb: SupabaseClient,
   cm: string,

@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { AuditEntry, LeadsAuditEntry, DashboardItemType, DashboardSeverity, WinnerEntry, WarningDetail } from './types';
-import { upsertDashboardItem, resolveDashboardItem, resolveStaleItems } from './supabase';
+import { upsertDashboardItem, resolveDashboardItem, resolveStaleItems, resolveInactiveCampaignItems } from './supabase';
 import { PILOT_CMS } from './config';
 
 interface DetectedIssue {
@@ -294,6 +294,12 @@ export async function buildDashboardState(
     const resolved = await resolveStaleItems(sb, cm, activeKeys, scanTimestamp);
     totalResolved += resolved;
   }
+
+  // Sweep: resolve items for campaigns that are paused/completed/ghost.
+  // Handles permanent item types (DISABLED, STEP_FROZEN, SEND_VOLUME_ANOMALY)
+  // that resolveStaleItems explicitly skips.
+  const inactiveResolved = await resolveInactiveCampaignItems(sb, scanTimestamp);
+  totalResolved += inactiveResolved;
 
   return { upserted, resolved: totalResolved };
 }
