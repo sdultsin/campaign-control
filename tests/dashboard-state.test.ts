@@ -7,6 +7,7 @@ vi.mock('../src/supabase', () => ({
   upsertDashboardItem: vi.fn().mockResolvedValue(undefined),
   resolveDashboardItem: vi.fn().mockResolvedValue(false),
   resolveStaleItems: vi.fn().mockResolvedValue(0),
+  resolveInactiveCampaignItems: vi.fn().mockResolvedValue(0),
 }));
 
 function makeKillAudit(campaignId: string, variant: number): AuditEntry {
