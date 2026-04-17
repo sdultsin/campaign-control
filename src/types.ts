@@ -434,7 +434,7 @@ export interface CampaignResult {
 
 // --- Dashboard state types ---
 
-export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'DRY_RUN_KILL' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'STEP_FROZEN' | 'WINNING';
+export type DashboardItemType = 'APPROACHING' | 'BLOCKED' | 'DISABLED' | 'DRY_RUN_KILL' | 'LEADS_EXHAUSTED' | 'LEADS_WARNING' | 'SEND_VOLUME_ANOMALY' | 'STEP_FROZEN' | 'WINNING';
 export type DashboardSeverity = 'CRITICAL' | 'WARNING' | 'INFO';
 
 export interface DashboardItem {

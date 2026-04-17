@@ -4,6 +4,14 @@ compatibility_date = "2025-03-15"
 account_id = "84ebd9102d6d7fe30ee0c9eb410461fc"
 
 [triggers]
+# Hourly at minute 0 for UTC hours 0, 12-23. Existing schedule handles:
+#   - 00 UTC eval
+#   - 12 UTC morning digest
+#   - 13-23 UTC evals (including 23 UTC self-audit)
+# The send-volume anomaly check (Sam pilot, spec 2026-04-16) piggybacks on the
+# 17, 18, 19, 20, 21, 22 UTC fires -- already covered by this cron, no changes
+# needed. DST caveat: when DST ends Nov 2026, 17:00-22:00 UTC becomes 12pm-5pm
+# EST instead of 1pm-6pm EDT. Acceptable for pilot; revisit if extending.
 crons = ["0 0,12-23 * * *"]
 
 [[kv_namespaces]]

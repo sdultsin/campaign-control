@@ -226,3 +226,115 @@ export const SLACK_SUPPRESSED = true;
 // Dashboard
 export const DASHBOARD_BASE_URL = 'https://cm-dashboard-sable.vercel.app';
 export const CRON_HOURS_UTC = [10, 13, 14, 16, 18, 19, 21, 23]; // Eval runs only (excludes 12:00 digest). For "Next scan" computation.
+
+// ---------------------------------------------------------------------------
+// Send-volume anomaly check (Sam pilot)
+// ---------------------------------------------------------------------------
+// Hourly 17:00-22:00 UTC (1pm-6pm EDT). Compares today's `sent` vs. the
+// expected daily volume derived from the campaign's RG batch tags + the
+// PAIR_VOLUME map. Alerts fire once per (campaign, UTC day, direction) with
+// KV dedup. Dashboard-only (no Slack). Spec:
+// specs/2026-04-16-cc-send-volume-anomaly-alert.md.
+//
+// NOTE on DST: the 17:00-22:00 UTC window maps to 1pm-6pm EDT during daylight
+// saving time. When DST ends in November 2026, the same window becomes 12pm-5pm
+// EST -- acceptable for pilot; revisit if pilot extends.
+
+/** Hours (UTC) at which the send-volume anomaly check fires. */
+export const SEND_VOLUME_CHECK_HOURS_UTC: Set<number> = new Set([17, 18, 19, 20, 21, 22]);
+
+/** Feature flag. Flip to false to disable the whole check without redeploy gymnastics. */
+export const SEND_VOLUME_CHECK_ENABLED = true;
+
+/** Ratio bands. ratio < UNDER_RATIO fires UNDER, ratio > OVER_RATIO fires OVER. */
+export const SEND_VOLUME_UNDER_RATIO = 0.70; // -30%
+export const SEND_VOLUME_OVER_RATIO = 1.20;  // +20%
+
+/** KV dedup TTL for send-volume alerts. 36h so it covers a full UTC day. */
+export const SEND_VOLUME_DEDUP_TTL_SECONDS = 36 * 60 * 60;
+
+/** Sam-only gate. Add other CMs here once Sam pilot proves value (spec §15). */
+export const SEND_VOLUME_PILOT_CMS: Set<string> = new Set(['SAM']);
+
+/** Substring that must appear in campaign_name (case-insensitive) for Sam eligibility. */
+export const SEND_VOLUME_SAM_NAME_SUBSTR = '(sam)';
+
+/**
+ * Pair -> expected daily send volume. Source: Inbox Hub Google Sheet, Funding
+ * tab, rows 1033-1178, columns C+L (verified 2026-04-16). Manually refresh
+ * when Sam adds new pairs or relaunches.
+ */
+export const PAIR_VOLUME: Record<string, number> = {
+  // Renaissance 3 (William, Bintley Finance)
+  'Pair 1': 23049,   // RG3281+RG3282
+  'Pair 2': 34560,   // RG3283+RG3284+RG3285
+
+  // Renaissance 6 (Jessica + others, Hey Lending / Bintley Finance / Crestora)
+  'Pair 3': 23061,   // RG3445+RG3446
+  'Pair 4': 23055,   // RG3447+RG3449
+  'Pair 5': 11880,   // RG3448
+  'Pair 6': 35640,   // RG3450+RG3451+RG3452
+  'Pair 7': 23760,   // RG3453+RG3454
+  'Pair 8': 35640,   // RG3455+RG3456+RG3457
+  'Pair 9': 23760,   // RG3458+RG3459
+
+  // Tariffs + Funding (NM/RB, Millrun Growth)
+  'Pair 10': 23760,  // RG3527+RG3528
+  'Pair 11': 23760,  // RG3529+RG3530
+  'Pair 12': 23760,  // RG3531+RG3532
+  'Pair 13': 23760,  // RG3533+RG3534
+  'Pair 14': 23760,  // RG3535+RG3536
+  'Pair 15': 23760,  // RG3537+RG3538
+  'Pair 16': 23760,  // RG3539+RG3540
+  'Pair 17': 23760,  // RG3541+RG3542
+  'Pair 18': 23760,  // RG3543+RG3544
+  'Pair 19': 23760,  // RG3545+RG3546
+  'Pair 20': 23760,  // RG3547+RG3548
+  'Pair 21': 23760,  // RG3549+RG3550
+  'Pair 22': 23760,  // RG3551+RG3552
+  'Pair 23': 23760,  // RG3553+RG3554
+};
+
+/**
+ * Deterministic lookup from RG batch tag to pair. Generated from the same
+ * Sheet rows as PAIR_VOLUME. If a campaign's RG tag is missing here, the
+ * check logs and skips (no alert) -- see spec §9.
+ */
+export const RG_TO_PAIR: Record<string, string> = {
+  'RG3281': 'Pair 1',  'RG3282': 'Pair 1',
+  'RG3283': 'Pair 2',  'RG3284': 'Pair 2',  'RG3285': 'Pair 2',
+  'RG3445': 'Pair 3',  'RG3446': 'Pair 3',
+  'RG3447': 'Pair 4',  'RG3449': 'Pair 4',
+  'RG3448': 'Pair 5',
+  'RG3450': 'Pair 6',  'RG3451': 'Pair 6',  'RG3452': 'Pair 6',
+  'RG3453': 'Pair 7',  'RG3454': 'Pair 7',
+  'RG3455': 'Pair 8',  'RG3456': 'Pair 8',  'RG3457': 'Pair 8',
+  'RG3458': 'Pair 9',  'RG3459': 'Pair 9',
+  'RG3527': 'Pair 10', 'RG3528': 'Pair 10',
+  'RG3529': 'Pair 11', 'RG3530': 'Pair 11',
+  'RG3531': 'Pair 12', 'RG3532': 'Pair 12',
+  'RG3533': 'Pair 13', 'RG3534': 'Pair 13',
+  'RG3535': 'Pair 14', 'RG3536': 'Pair 14',
+  'RG3537': 'Pair 15', 'RG3538': 'Pair 15',
+  'RG3539': 'Pair 16', 'RG3540': 'Pair 16',
+  'RG3541': 'Pair 17', 'RG3542': 'Pair 17',
+  'RG3543': 'Pair 18', 'RG3544': 'Pair 18',
+  'RG3545': 'Pair 19', 'RG3546': 'Pair 19',
+  'RG3547': 'Pair 20', 'RG3548': 'Pair 20',
+  'RG3549': 'Pair 21', 'RG3550': 'Pair 21',
+  'RG3551': 'Pair 22', 'RG3552': 'Pair 22',
+  'RG3553': 'Pair 23', 'RG3554': 'Pair 23',
+};
+
+/**
+ * Map from campaign_data.workspace_name (pipeline value) to the Instantly
+ * workspace slug used by INSTANTLY_API_KEYS / InstantlyDirectApi. The
+ * pipeline writes display names ("Renaissance 3"), but the API key map is
+ * keyed on slugs. "Tariffs + Funding" was renamed from "erc-1" in the UI
+ * but the slug stuck -- hence the legacy mapping.
+ */
+export const SEND_VOLUME_WORKSPACE_SLUG: Record<string, string> = {
+  'Renaissance 3': 'renaissance-3',
+  'Renaissance 6': 'renaissance-6',
+  'Tariffs + Funding': 'erc-1',
+};

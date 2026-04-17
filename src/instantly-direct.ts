@@ -164,4 +164,28 @@ export class InstantlyDirectApi {
     await this.patch(`/campaigns/${campaignId}`, key, updates);
   }
 
+  /**
+   * Daily campaign analytics. Used by the send-volume anomaly check to compare
+   * today's `sent` vs. the campaign's expected daily volume. Both start_date
+   * and end_date are YYYY-MM-DD strings. Set both to today's UTC date to get
+   * the single-day total for today.
+   *
+   * Response shape (observed from Instantly v2): either a bare array of day
+   * rows or `{ daily: [...] }` / `{ items: [...] }`. extractArray handles
+   * both. Each row has `date` and `sent` among other metrics.
+   */
+  async getDailyAnalytics(
+    workspaceId: string,
+    campaignId: string,
+    startDate: string,
+    endDate: string,
+  ): Promise<Array<{ date: string; sent: number }>> {
+    const key = this.getKey(workspaceId);
+    const raw = await this.get<unknown>('/campaigns/analytics/daily', key, {
+      campaign_id: campaignId,
+      start_date: startDate,
+      end_date: endDate,
+    });
+    return this.extractArray<{ date: string; sent: number }>(raw);
+  }
 }

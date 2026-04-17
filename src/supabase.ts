@@ -355,11 +355,14 @@ export async function resolveDashboardItem(
   return true;
 }
 
-// Item types that represent permanent actions (kills, freezes). These should
-// never be auto-resolved because subsequent runs won't re-detect them — the
-// variant is already disabled in Instantly. Only explicit CM action (dismiss
-// from dashboard) should clear these.
-const PERMANENT_ITEM_TYPES: Set<string> = new Set(['DISABLED', 'STEP_FROZEN']);
+// Item types that should NOT be auto-resolved by the eval-loop scan. Two cases:
+// 1. Permanent actions (kills, freezes): variant is already disabled in Instantly,
+//    so subsequent eval runs won't re-detect it. Only explicit CM dismiss clears.
+// 2. Externally-managed types (SEND_VOLUME_ANOMALY): populated by a separate
+//    check loop (runSendVolumeCheck, hourly 17-22 UTC), not by the eval loop.
+//    The eval's stale-items sweep doesn't know about these and would incorrectly
+//    clear them; the owning check is responsible for its own lifecycle.
+const PERMANENT_ITEM_TYPES: Set<string> = new Set(['DISABLED', 'STEP_FROZEN', 'SEND_VOLUME_ANOMALY']);
 
 export async function resolveStaleItems(
   sb: SupabaseClient,

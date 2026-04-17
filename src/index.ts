@@ -66,6 +66,8 @@ import {
   getWorkspaceLeadsBatch, getCampaignStructure,
 } from './pipeline-data';
 import type { PipelineCampaignMeta } from './pipeline-data';
+import { runSendVolumeCheck } from './send-volume-anomaly';
+import { SEND_VOLUME_CHECK_HOURS_UTC } from './config';
 
 // ---------------------------------------------------------------------------
 // KV lock helpers
@@ -363,6 +365,16 @@ export default {
     const runPromise = executeScheduledRun(env, { skipAudit });
     ctx.waitUntil(runPromise);
     await runPromise;
+
+    // Send-volume anomaly check (Sam pilot, spec 2026-04-16). Runs hourly
+    // 17:00-22:00 UTC (1pm-6pm EDT), after the main eval. Independent of the
+    // eval lock because it doesn't modify any variants -- it only reads
+    // Instantly analytics and writes dashboard/notification rows.
+    if (SEND_VOLUME_CHECK_HOURS_UTC.has(scheduledHour)) {
+      const svPromise = executeSendVolumeCheck(env);
+      ctx.waitUntil(svPromise);
+      await svPromise;
+    }
   },
 
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -408,6 +420,22 @@ export default {
         return new Response('Add ?confirm=yes to actually clear keys. This is destructive.', { status: 400 });
       }
       return clearV1Keys(env);
+    }
+
+    if (url.pathname === '/__send-volume-check') {
+      // Manual trigger for the send-volume anomaly check. Useful for local
+      // verification -- writes dashboard items + KV dedup as the cron would.
+      // Add ?dry=1 to suppress KV dedup writes (lets you re-run without
+      // hitting cached dedup). Dashboard writes still happen in dry mode.
+      const dry = url.searchParams.get('dry') === '1';
+      const sb = (env.SUPABASE_URL && env.SUPABASE_ANON_KEY)
+        ? getSupabaseClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY)
+        : null;
+      if (!sb) return new Response('Supabase not configured', { status: 500 });
+      if (!env.INSTANTLY_API_KEYS) return new Response('INSTANTLY_API_KEYS not set', { status: 500 });
+      const instantly = new InstantlyDirectApi(env.INSTANTLY_API_KEYS);
+      const summary = await runSendVolumeCheck({ sb, instantly, kv: env.KV, isDryRun: dry });
+      return Response.json(summary);
     }
 
     return new Response('Auto Turn-Off Worker. Use /__trigger to queue a manual run, /__baseline to capture a baseline.', { status: 200 });
@@ -460,6 +488,44 @@ async function executeMorningDigest(env: Env): Promise<void> {
   }
 
   console.log(JSON.stringify({ event: 'digest_complete', timestamp: new Date().toISOString() }));
+}
+
+// ---------------------------------------------------------------------------
+// Send-volume anomaly check (hourly 17:00-22:00 UTC). Sam pilot.
+// Spec: specs/2026-04-16-cc-send-volume-anomaly-alert.md
+// ---------------------------------------------------------------------------
+
+async function executeSendVolumeCheck(env: Env): Promise<void> {
+  console.log(JSON.stringify({ event: 'send_volume_start', timestamp: new Date().toISOString() }));
+
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    console.error('[send-volume] SUPABASE_URL/SUPABASE_ANON_KEY not set, skipping');
+    return;
+  }
+  if (!env.INSTANTLY_API_KEYS) {
+    console.error('[send-volume] INSTANTLY_API_KEYS not set, skipping');
+    return;
+  }
+  if (!env.KV) {
+    console.error('[send-volume] KV binding not set, skipping');
+    return;
+  }
+
+  const sb = getSupabaseClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
+  const instantly = new InstantlyDirectApi(env.INSTANTLY_API_KEYS);
+  const isDryRun = env.DRY_RUN === 'true';
+
+  try {
+    const summary = await runSendVolumeCheck({
+      sb,
+      instantly,
+      kv: env.KV,
+      isDryRun,
+    });
+    console.log(JSON.stringify({ event: 'send_volume_complete', ...summary }));
+  } catch (err) {
+    console.error(`[send-volume] unhandled failure: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // ---------------------------------------------------------------------------
