@@ -1360,7 +1360,12 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     dryRun: isDryRun,
                   };
 
-                  // Kill cap check: defer if we've hit the per-CM limit
+                  // Kill cap check + reservation: defer if we've hit the per-CM limit.
+                  // Must reserve the slot synchronously BEFORE any await, otherwise
+                  // concurrent campaigns for the same CM (processWithConcurrency, up to
+                  // 15-way parallel) can all read budget>0, all await KV, all pass the
+                  // gate, and collectively exceed MAX_KILLS_PER_RUN. Refunded below if
+                  // the kill is skipped (exempt or already-killed dedup).
                   const killCapReached = getKillBudget(cmName) <= 0;
 
                   if (killCapReached && !isDryRun) {
@@ -1379,6 +1384,10 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                       `[auto-turnoff] DEFERRED (kill cap ${MAX_KILLS_PER_RUN} reached): ${workspace.name} / ${campaign.name} / Step ${stepIndex + 1} Variant ${kill.variantIndex} — will retry next run`,
                     );
                     continue;
+                  }
+
+                  if (!isDryRun) {
+                    decrementKillBudget(cmName);
                   }
 
                   if (isDryRun) {
@@ -1427,18 +1436,22 @@ async function executeScheduledRun(env: Env, options?: { skipAudit?: boolean }):
                     const exempt = await env.KV.get(exemptKey);
 
                     if (exempt) {
+                      // Refund the slot reserved above — no kill will be attempted.
+                      incrementKillBudget(cmName, 1);
                       console.log(
                         `[auto-turnoff] Exempt: ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — CM re-enabled after kill, skipping`,
                       );
                     } else if (!alreadyKilled) {
+                      // Slot already reserved synchronously above; just queue the kill.
                       pendingKills.push({
                         kill: killAction,
                         auditEntry,
                         stepIndex,
                         channelId,
                       });
-                      decrementKillBudget(cmName);
                     } else {
+                      // Refund the slot reserved above — dedup is skipping this kill.
+                      incrementKillBudget(cmName, 1);
                       console.log(
                         `[auto-turnoff] Kill dedup: already notified for ${campaign.name} step=${stepIndex + 1} variant=${kill.variantIndex} — skipping`,
                       );
