@@ -5,6 +5,7 @@ import {
   evaluateAnomaly,
   todayUtcIso,
   dedupKey,
+  existingAlertToday,
   fetchActiveSamCampaigns,
   runSendVolumeCheck,
 } from '../src/send-volume-anomaly';
@@ -235,6 +236,8 @@ function makeRunSbStub(rows: unknown[]) {
     eq: vi.fn().mockImplementation(() => chain),
     ilike: vi.fn().mockImplementation(() => chain),
     is: vi.fn().mockImplementation(() => chain),
+    gte: vi.fn().mockImplementation(() => chain),
+    lte: vi.fn().mockImplementation(() => chain),
     limit: vi.fn().mockImplementation(() => chain),
     maybeSingle: vi.fn().mockResolvedValue({ data: null, error: null }),
     update: vi.fn().mockImplementation(() => chain),
@@ -246,6 +249,50 @@ function makeRunSbStub(rows: unknown[]) {
 
   return sb as unknown as SupabaseClient;
 }
+
+// --- DB-backed dedup fallback (belt-and-suspenders for KV loss) ---------
+
+/** Stub sb.from('cc_dashboard_items').select(...).eq...gte...lte...limit() returning `existing`. */
+function buildDashboardItemsStub(existing: Array<{ context: Record<string, unknown> }>) {
+  const chain: Record<string, unknown> = {
+    select: vi.fn().mockImplementation(() => chain),
+    eq: vi.fn().mockImplementation(() => chain),
+    gte: vi.fn().mockImplementation(() => chain),
+    lte: vi.fn().mockImplementation(() => chain),
+    limit: vi.fn().mockResolvedValue({ data: existing, error: null }),
+  };
+  const sb = { from: vi.fn().mockReturnValue(chain) };
+  return sb as unknown as SupabaseClient;
+}
+
+describe('existingAlertToday', () => {
+  it('returns true when a dashboard row exists for same campaign/direction/date', async () => {
+    const sb = buildDashboardItemsStub([
+      { context: { direction: 'over', analytics_date: '2026-04-17' } },
+    ]);
+    const hit = await existingAlertToday(sb, 'c-abc', 'over', '2026-04-17');
+    expect(hit).toBe(true);
+  });
+
+  it('returns false when no matching row exists', async () => {
+    const sb = buildDashboardItemsStub([]);
+    expect(await existingAlertToday(sb, 'c-abc', 'over', '2026-04-17')).toBe(false);
+  });
+
+  it('ignores rows with a different direction', async () => {
+    const sb = buildDashboardItemsStub([
+      { context: { direction: 'under', analytics_date: '2026-04-17' } },
+    ]);
+    expect(await existingAlertToday(sb, 'c-abc', 'over', '2026-04-17')).toBe(false);
+  });
+
+  it('ignores rows from a different analytics_date (defensive)', async () => {
+    const sb = buildDashboardItemsStub([
+      { context: { direction: 'over', analytics_date: '2026-04-16' } },
+    ]);
+    expect(await existingAlertToday(sb, 'c-abc', 'over', '2026-04-17')).toBe(false);
+  });
+});
 
 describe('runSendVolumeCheck - dedup', () => {
   it('first call fires + writes KV, second call in same day skips', async () => {
@@ -283,6 +330,91 @@ describe('runSendVolumeCheck - dedup', () => {
     });
     expect(second.alertsFiredUnder).toBe(0);
     expect(second.dedupSkipped).toBe(1);
+  });
+
+  it('DB fallback suppresses when KV is empty but dashboard row exists today', async () => {
+    // Simulates the real 2026-04-17 scenario: resolver cleared the dashboard
+    // row and the KV put quietly failed (or KV was evicted), so a naive
+    // re-check would duplicate the alert. The DB check catches it.
+    const rows = [
+      {
+        campaign_id: 'cd-db-1',
+        campaign_name: 'Pair 12 - General (SAM) Copy A',
+        workspace_name: 'Tariffs + Funding',
+        rg_batch_tags: ['RG3531', 'RG3532'],
+        status: '1',
+      },
+    ];
+
+    // Table-aware stub: campaign_data -> campaign rows,
+    // cc_dashboard_items with select('context') -> existing over-alert row for today,
+    // any other cc_dashboard_items/cc_notifications calls -> empty/success.
+    const wed = new Date('2026-04-15T18:00:00Z');
+    const today = wed.toISOString().slice(0, 10);
+    const existingDashboardRow = {
+      context: { direction: 'over', analytics_date: today },
+    };
+
+    function buildTableAwareSb() {
+      const campaignChain: Record<string, unknown> = {
+        select: vi.fn().mockImplementation(() => campaignChain),
+        eq: vi.fn().mockImplementation(() => campaignChain),
+        ilike: vi.fn().mockImplementation(() => campaignChain),
+        then: (resolve: (v: { data: unknown[]; error: null }) => unknown) =>
+          resolve({ data: rows, error: null }),
+      };
+      // existingAlertToday: .select('context').eq.eq.gte.lte.limit()
+      const dashContextChain: Record<string, unknown> = {
+        eq: vi.fn().mockImplementation(() => dashContextChain),
+        gte: vi.fn().mockImplementation(() => dashContextChain),
+        lte: vi.fn().mockImplementation(() => dashContextChain),
+        limit: vi.fn().mockResolvedValue({ data: [existingDashboardRow], error: null }),
+      };
+      // upsertDashboardItem existing-match check + update + insert
+      const dashGenericChain: Record<string, unknown> = {
+        eq: vi.fn().mockImplementation(() => dashGenericChain),
+        is: vi.fn().mockImplementation(() => dashGenericChain),
+        limit: vi.fn().mockResolvedValue({ data: [], error: null }),
+      };
+      const dashChain = {
+        select: vi.fn((cols: string) => {
+          if (typeof cols === 'string' && cols.trim() === 'context') return dashContextChain;
+          return dashGenericChain;
+        }),
+        update: vi.fn().mockImplementation(() => dashGenericChain),
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      const notifChain = {
+        insert: vi.fn().mockResolvedValue({ error: null }),
+      };
+      return {
+        from: vi.fn((table: string) => {
+          if (table === 'campaign_data') return campaignChain;
+          if (table === 'cc_dashboard_items') return dashChain;
+          if (table === 'cc_notifications') return notifChain;
+          return campaignChain;
+        }),
+      } as unknown as SupabaseClient;
+    }
+
+    // Over-alert path: actual >= expected * 1.20, today_sent = 60,000 vs 23,760 expected -> ratio 2.52.
+    const inst = makeInstantlyStub(60000);
+    const kv = makeKvStub(); // intentionally empty -> KV miss, DB hit
+
+    const summary = await runSendVolumeCheck({
+      sb: buildTableAwareSb(),
+      instantly: inst,
+      kv,
+      now: wed,
+      isDryRun: false,
+    });
+
+    expect(summary.alertsFiredOver).toBe(0);
+    expect(summary.alertsFiredUnder).toBe(0);
+    expect(summary.dedupSkipped).toBe(1);
+    // DB-hit path should heal the KV cache so next tick is fast.
+    const expectedKey = `anomaly_fired:${today}:cd-db-1:over`;
+    expect((kv as unknown as { store: Map<string, string> }).store.has(expectedKey)).toBe(true);
   });
 
   it('next UTC day resets dedup (uses new key)', async () => {

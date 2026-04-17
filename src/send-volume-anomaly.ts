@@ -132,6 +132,41 @@ export function dedupKey(dateIso: string, campaignId: string, direction: Anomaly
   return `anomaly_fired:${dateIso}:${campaignId}:${direction}`;
 }
 
+/**
+ * DB-backed secondary dedup. Returns true if any cc_dashboard_items row exists
+ * for (campaign, SEND_VOLUME_ANOMALY, direction, analytics_date) regardless of
+ * resolved_at / dismissed_at. Survives KV write failures and resolver sweeps
+ * that mis-flag the campaign as inactive.
+ */
+export async function existingAlertToday(
+  sb: SupabaseClient,
+  campaignId: string,
+  direction: AnomalyDirection,
+  analyticsDate: string,
+): Promise<boolean> {
+  const dayStart = `${analyticsDate}T00:00:00.000Z`;
+  const dayEnd = `${analyticsDate}T23:59:59.999Z`;
+  const { data, error } = await sb
+    .from('cc_dashboard_items')
+    .select('context')
+    .eq('campaign_id', campaignId)
+    .eq('item_type', 'SEND_VOLUME_ANOMALY')
+    .gte('created_at', dayStart)
+    .lte('created_at', dayEnd)
+    .limit(50);
+  if (error) {
+    console.error(`[send-volume] existingAlertToday query failed: ${error.message}`);
+    return false; // fail open: don't suppress on DB error
+  }
+  for (const row of data ?? []) {
+    const ctx = (row as { context?: { direction?: string; analytics_date?: string } }).context;
+    if (ctx?.direction === direction && ctx?.analytics_date === analyticsDate) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // --- Supabase query ------------------------------------------------------
 
 /**
@@ -277,10 +312,27 @@ export async function runSendVolumeCheck(params: {
     }
     if (!decision.fire || !decision.direction) continue;
 
-    // KV dedup: once per (day, campaign, direction).
+    // Dedup: once per (day, campaign, direction). Two layers so a silent KV
+    // write failure or a cross-process KV eviction doesn't duplicate alerts:
+    // (1) KV primary — fast common-path check.
+    // (2) DB fallback — cc_dashboard_items today. Survives KV loss; heals KV.
     const kvKey = dedupKey(analyticsDate, cand.campaignId, decision.direction);
-    const existing = await params.kv.get(kvKey);
-    if (existing) {
+    let isDuped = false;
+    const kvHit = await params.kv.get(kvKey);
+    if (kvHit) {
+      isDuped = true;
+    } else if (
+      await existingAlertToday(params.sb, cand.campaignId, decision.direction, analyticsDate)
+    ) {
+      isDuped = true;
+      // Heal the KV cache so subsequent checks are fast and don't hit the DB.
+      if (!(params.isDryRun ?? false)) {
+        await params.kv
+          .put(kvKey, new Date().toISOString(), { expirationTtl: SEND_VOLUME_DEDUP_TTL_SECONDS })
+          .catch((err) => console.error(`[send-volume] KV dedup heal failed: ${err}`));
+      }
+    }
+    if (isDuped) {
       summary.dedupSkipped++;
       console.log(`[send-volume] dedup skip campaign=${cand.campaignId} direction=${decision.direction}`);
       continue;
